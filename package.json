@@ -1,0 +1,36 @@
+{
+  "name": "pi-anchor-edit-core",
+  "version": "0.1.0",
+  "description": "Shared anchor-based edit core for Pi packages",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test dist/test/**/*.test.js",
+    "pretest": "npm run build"
+  },
+  "dependencies": {
+    "file-type": "^21.3.0",
+    "xxhashjs": "^0.2.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@types/xxhashjs": "^0.2.4",
+    "typescript": "^5.9.2"
+  },
+  "license": "MIT",
+  "author": "T50-Systems"
+}

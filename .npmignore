@@ -1,0 +1,6 @@
+dist/test/
+test/
+.env
+.env.*
+auth.json
+credentials*

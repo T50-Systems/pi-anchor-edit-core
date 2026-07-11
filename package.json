@@ -2,6 +2,23 @@
   "name": "pi-anchor-edit-core",
   "version": "0.1.0",
   "description": "Shared anchor-based edit core for Pi packages",
+  "keywords": [
+    "pi",
+    "anchor-editing",
+    "hashline",
+    "atomic-write"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/T50-Systems/pi-anchor-edit-core.git"
+  },
+  "homepage": "https://github.com/T50-Systems/pi-anchor-edit-core#readme",
+  "bugs": {
+    "url": "https://github.com/T50-Systems/pi-anchor-edit-core/issues"
+  },
+  "engines": {
+    "node": ">=22"
+  },
   "type": "module",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
@@ -12,7 +29,7 @@
     }
   },
   "files": [
-    "dist",
+    "dist/src",
     "docs",
     "README.md",
     "CONTRIBUTING.md",
@@ -23,8 +40,10 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "node --test dist/test/**/*.test.js",
-    "test:coverage": "npm run build && node --experimental-test-coverage --test dist/test/**/*.test.js",
+    "test:coverage": "npm run build && node --experimental-test-coverage --test-coverage-lines=85 --test-coverage-branches=75 --test dist/test/**/*.test.js",
     "benchmark": "npm run build && node benchmarks/core.mjs",
+    "verify:package": "npm run build && node scripts/verify-package.mjs",
+    "release:notes": "node scripts/extract-release-notes.mjs",
     "pretest": "npm run build"
   },
   "dependencies": {

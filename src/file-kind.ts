@@ -1,4 +1,4 @@
-import { open as fsOpen, stat as fsStat } from 'node:fs/promises';
+import { lstat as fsLstat, open as fsOpen } from 'node:fs/promises';
 import { fileTypeFromBuffer } from 'file-type';
 
 const IMAGE_MIME_TYPES = new Set<string>([
@@ -22,6 +22,7 @@ const FILE_TYPE_SNIFF_BYTES = 8192;
 
 export type LoadedFile =
   | { kind: 'directory' }
+  | { kind: 'symlink' }
   | { kind: 'image'; mimeType: string }
   | { kind: 'text'; text: string; hadUtf8DecodeErrors?: true }
   | { kind: 'binary'; description: string };
@@ -31,7 +32,10 @@ function hasNullByte(buffer: Uint8Array): boolean {
 }
 
 export async function loadFileKindAndText(filePath: string): Promise<LoadedFile> {
-  const pathStat = await fsStat(filePath);
+  const pathStat = await fsLstat(filePath);
+  if (pathStat.isSymbolicLink()) {
+    return { kind: 'symlink' };
+  }
   if (pathStat.isDirectory()) {
     return { kind: 'directory' };
   }
@@ -60,7 +64,8 @@ export async function loadFileKindAndText(filePath: string): Promise<LoadedFile>
       return { kind: 'binary', description: 'null bytes detected' };
     }
 
-    const decoder = new TextDecoder('utf-8');
+    // Preserve a UTF-8 BOM as content so a read/edit round trip is byte-safe.
+    const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
     const fatalDecoder = new TextDecoder('utf-8', { fatal: true });
     let hadUtf8DecodeErrors = false;
     const noteUtf8DecodeErrors = (chunk?: Uint8Array): void => {

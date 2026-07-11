@@ -1,6 +1,8 @@
 export type LoadedFile = {
     kind: 'directory';
 } | {
+    kind: 'symlink';
+} | {
     kind: 'image';
     mimeType: string;
 } | {

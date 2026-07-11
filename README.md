@@ -107,12 +107,15 @@ CI runs Node.js 22 on Ubuntu, Windows, and macOS, plus the Node.js 24 compatibil
 ## Documentation
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — components, control flow, and invariants.
+- [`docs/BRANCH_PROTECTION.md`](docs/BRANCH_PROTECTION.md) — required review/check policy and read-only verification.
+- [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — classified errors, filesystem recovery, and safe escalation.
 - [`docs/EXAMPLES.md`](docs/EXAMPLES.md) — parsing, editing, recovery, and adapter examples.
 - [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) — reproducible hash baseline.
 - [`docs/PRODUCT.md`](docs/PRODUCT.md) — vision and success metrics.
 - [`docs/RELEASING.md`](docs/RELEASING.md) — package verification, immutable tags, release creation, and recovery.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — contributor workflow.
 - [`CHANGELOG.md`](CHANGELOG.md) — release history.
+- [`SECURITY.md`](SECURITY.md) — supported versions, private reporting, trust boundaries, and security maintenance.
 
 ## Release workflow
 

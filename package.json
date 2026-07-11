@@ -47,7 +47,7 @@
     "pretest": "npm run build"
   },
   "dependencies": {
-    "file-type": "^21.3.0",
+    "file-type": "^22.0.1",
     "xxhashjs": "^0.2.2"
   },
   "devDependencies": {

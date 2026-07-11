@@ -1,4 +1,4 @@
-import { open as fsOpen, stat as fsStat } from 'node:fs/promises';
+import { lstat as fsLstat, open as fsOpen } from 'node:fs/promises';
 import { fileTypeFromBuffer } from 'file-type';
 const IMAGE_MIME_TYPES = new Set([
     'image/jpeg',
@@ -19,7 +19,10 @@ function hasNullByte(buffer) {
     return buffer.includes(0);
 }
 export async function loadFileKindAndText(filePath) {
-    const pathStat = await fsStat(filePath);
+    const pathStat = await fsLstat(filePath);
+    if (pathStat.isSymbolicLink()) {
+        return { kind: 'symlink' };
+    }
     if (pathStat.isDirectory()) {
         return { kind: 'directory' };
     }
@@ -44,7 +47,8 @@ export async function loadFileKindAndText(filePath) {
         if (hasNullByte(sample)) {
             return { kind: 'binary', description: 'null bytes detected' };
         }
-        const decoder = new TextDecoder('utf-8');
+        // Preserve a UTF-8 BOM as content so a read/edit round trip is byte-safe.
+        const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
         const fatalDecoder = new TextDecoder('utf-8', { fatal: true });
         let hadUtf8DecodeErrors = false;
         const noteUtf8DecodeErrors = (chunk) => {

@@ -110,12 +110,13 @@ CI runs Node.js 22 on Ubuntu, Windows, and macOS, plus the Node.js 24 compatibil
 - [`docs/EXAMPLES.md`](docs/EXAMPLES.md) — parsing, editing, recovery, and adapter examples.
 - [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) — reproducible hash baseline.
 - [`docs/PRODUCT.md`](docs/PRODUCT.md) — vision and success metrics.
+- [`docs/RELEASING.md`](docs/RELEASING.md) — package verification, immutable tags, release creation, and recovery.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — contributor workflow.
 - [`CHANGELOG.md`](CHANGELOG.md) — release history.
 
 ## Release workflow
 
-Update `package.json` and `CHANGELOG.md`, merge validated changes, and create a matching `vX.Y.Z` tag. The release workflow verifies build/check/tests, dependency audit, and tag/version consistency.
+Update `package.json` and add a matching version section to `CHANGELOG.md`, merge validated changes, and create a new immutable `vX.Y.Z` tag. The release workflow enforces coverage and audit gates, verifies provenance/license/package contents and tag/version/changelog consistency, builds an npm-format tarball, and creates one GitHub release with the tarball attached. See [`docs/RELEASING.md`](docs/RELEASING.md).
 
 ## License
 

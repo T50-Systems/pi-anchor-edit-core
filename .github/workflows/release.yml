@@ -5,10 +5,10 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  verify:
+  release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -18,13 +18,43 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
-      - run: npm test
+      - run: npm run test:coverage
       - run: npm audit --audit-level=high
-      - name: Verify tag matches package version
+      - name: Verify metadata, license, package contents, and tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: npm run verify:package
+      - name: Extract matching changelog notes
+        run: npm run release:notes > release-notes.md
+      - name: Build package artifact
+        id: pack
         shell: bash
         run: |
-          expected="v$(node -p "require('./package.json').version")"
-          test "$GITHUB_REF_NAME" = "$expected" || {
-            echo "Tag $GITHUB_REF_NAME does not match package version $expected"
+          npm pack --json > pack-result.json
+          package_file="$(node -e "console.log(require('./pack-result.json')[0].filename)")"
+          echo "package_file=$package_file" >> "$GITHUB_OUTPUT"
+      - name: Preserve package as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-package-${{ github.ref_name }}
+          path: ${{ steps.pack.outputs.package_file }}
+          if-no-files-found: error
+          retention-days: 30
+      - name: Refuse to replace an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; immutable releases are never replaced."
             exit 1
-          }
+          fi
+      - name: Create GitHub release and attach package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME"
+          "${{ steps.pack.outputs.package_file }}"
+          --repo "$GITHUB_REPOSITORY"
+          --verify-tag
+          --title "$GITHUB_REF_NAME"
+          --notes-file release-notes.md

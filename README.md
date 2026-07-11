@@ -2,7 +2,11 @@
 
 Shared anchor-based editing primitives for Pi packages that need reliable line-addressed file edits.
 
-`pi-anchor-edit-core` is the reusable TypeScript library behind higher-level T50 Pi editing packages such as [`pi-hashline-edit-plus`](https://github.com/T50-Systems/pi-hashline-edit-plus) and [`pi-smart-edit`](https://github.com/T50-Systems/pi-smart-edit). It packages the common hashline, file-kind, text-normalization, runtime, and local-filesystem client behavior so those packages do not each carry their own edit engine.
+`pi-anchor-edit-core` is the reusable TypeScript library behind [`pi-hashline-edit-plus`](https://github.com/T50-Systems/pi-hashline-edit-plus) and [`pi-smart-edit`](https://github.com/T50-Systems/pi-smart-edit). It centralizes hashline, file-kind, text-normalization, runtime, and filesystem-client behavior so packages do not carry divergent edit engines.
+
+## Product vision
+
+Provide one dependable cross-platform edit core where every edit applies to the exact observed content or fails with actionable retry information. See [`docs/PRODUCT.md`](docs/PRODUCT.md).
 
 ## What it provides
 
@@ -10,74 +14,102 @@ Shared anchor-based editing primitives for Pi packages that need reliable line-a
 - Hashline edit resolution for `replace`, `append`, `prepend`, and exact `replace_text` operations.
 - Stale-anchor error parsing helpers for retry loops.
 - File-kind and text-loading helpers for text/binary/empty-file handling.
-- Text normalization utilities used by cross-platform edit tools.
-- A small local filesystem Pi-style client for test harnesses and retry-oriented tooling.
+- Text and newline normalization used by cross-platform edit tools.
+- A local filesystem Pi-style client for tests and retry-oriented tooling.
 - TypeScript declarations and ESM output under `dist/`.
 
-## Package shape
+## Quickstart
 
-```text
-src/
-  anchors.ts            anchor parsing and stale-anchor helpers
-  file-kind.ts          text/binary/empty-file detection
-  filesystem-client.ts  local Pi-shaped read/edit client
-  hashline.ts           core hashline edit application
-  runtime.ts            runtime utilities
-  text.ts               text normalization helpers
-  types.ts              shared edit/read types
-test/                   node:test coverage for core behavior
-dist/                   published build output
-```
-
-## Install
-
-Use from GitHub or as a dependency of another T50 Pi package:
+### 1. Install
 
 ```bash
 npm install git+https://github.com/T50-Systems/pi-anchor-edit-core.git
 ```
 
-For local development:
+### 2. Import the public API
+
+```ts
+import {
+  FilesystemPiClient,
+  applyHashlineEdits,
+  parseStaleAnchorError,
+  resolveEditAnchors,
+} from 'pi-anchor-edit-core';
+```
+
+### 3. Read before editing
+
+```ts
+const client = new FilesystemPiClient();
+const rendered = await client.read({ path: 'src/file.ts' });
+```
+
+Copy anchors verbatim from `rendered`; they are opaque observations.
+
+### 4. Apply a verified edit
+
+```ts
+const result = applyHashlineEdits(
+  'alpha\nbeta',
+  resolveEditAnchors([
+    { op: 'replace', pos: '2#<copied-hash>:beta', lines: ['patched'] },
+  ]),
+);
+```
+
+## Package shape
+
+```text
+src/         core TypeScript modules
+test/        node:test regression suite
+benchmarks/  reproducible local benchmark
+docs/        product, architecture, examples, and performance guidance
+dist/        compiled ESM and declarations
+```
+
+## Troubleshooting
+
+### `[E_STALE_ANCHOR]`
+
+The file changed after the anchor was observed. Parse the error with `parseStaleAnchorError` and retry using the exact `>>> LINE#HASH:content` suggestions. Do not resend the stale request.
+
+### `[E_INVALID_PATCH]`
+
+Edit `lines` must contain literal file content. Remove copied `LINE#HASH:` prefixes, diff markers, or duplicated boundary lines.
+
+### Exact replacement is ambiguous
+
+`replace_text` requires one unique occurrence. Narrow `oldText` or use anchored line edits.
+
+### Newlines changed unexpectedly
+
+Use the filesystem adapter, which detects and preserves newline style. Include a CRLF regression test for adapter changes.
+
+## Development
 
 ```bash
 git clone https://github.com/T50-Systems/pi-anchor-edit-core
 cd pi-anchor-edit-core
 npm install
-```
-
-## Basic usage
-
-```ts
-import {
-  applyHashlineEdits,
-  createFilesystemClient,
-  parseAnchorLine,
-} from "pi-anchor-edit-core";
-
-const anchor = parseAnchorLine("12#AB:const value = 1;");
-
-const client = createFilesystemClient({ cwd: process.cwd() });
-const readResult = await client.read({ path: "src/file.ts" });
-```
-
-Higher-level packages normally call these primitives rather than exposing this library directly to Pi users.
-
-## Development
-
-```bash
-npm install
 npm run build
 npm run check
 npm test
+npm run test:coverage
+npm run benchmark
 ```
 
-`npm test` builds first through `pretest` and then runs the compiled `node:test` suite in `dist/test`.
+## Documentation
 
-## Release notes
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — components, control flow, and invariants.
+- [`docs/EXAMPLES.md`](docs/EXAMPLES.md) — parsing, editing, recovery, and adapter examples.
+- [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) — reproducible hash baseline.
+- [`docs/PRODUCT.md`](docs/PRODUCT.md) — vision and success metrics.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — contributor workflow.
+- [`CHANGELOG.md`](CHANGELOG.md) — release history.
 
-- Package type: ESM.
-- Public entrypoint: `dist/src/index.js` with matching TypeScript declarations.
-- Published files: `dist`, `README.md`, and `LICENSE`.
+## Release workflow
+
+Update `package.json` and `CHANGELOG.md`, merge validated changes, and create a matching `vX.Y.Z` tag. The release workflow verifies build/check/tests, dependency audit, and tag/version consistency.
 
 ## License
 

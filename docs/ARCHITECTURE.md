@@ -18,7 +18,7 @@
 3. The core parses references and verifies current line hashes/text hints.
 4. Operations are validated for overlap, uniqueness, and invalid rendered prefixes.
 5. The engine produces new content or throws a classified actionable error.
-6. The filesystem adapter preserves newline behavior and writes the result.
+6. The filesystem adapter classifies the path before decoding, preserves newline/BOM/mode behavior, and atomically replaces the selected directory entry.
 
 ## Invariants
 
@@ -27,3 +27,6 @@
 - Edit payloads contain literal file content, not rendered `LINE#HASH:` prefixes.
 - Pure transformation code remains independent from filesystem access.
 - Public exports flow through `src/index.ts` and compiled `dist` declarations.
+- Symbolic links are rejected rather than followed. Atomic replacement of a hard-linked path changes only that path; sibling links retain the prior inode and content.
+- Binary, image, special-file, null-byte, and decode-loss inputs are rejected before any write.
+- Temporary files are created beside the destination so replacement stays on the same filesystem, and are removed after success or handled failure.

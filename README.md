@@ -85,6 +85,8 @@ Edit `lines` must contain literal file content. Remove copied `LINE#HASH:` prefi
 
 Use the filesystem adapter, which detects and preserves newline style. Include a CRLF regression test for adapter changes.
 
+The adapter refuses directories, symbolic links, special files, images, null-byte/binary data, and invalid UTF-8 that would decode with replacement characters. Successful edits use a same-directory temporary file and atomic replacement, preserve UTF-8 BOMs and existing permission bits, and clean up temporary files after success or handled failure. Atomic replacement intentionally breaks the edited path out of a hard-link set; other hard links continue to reference the unchanged original inode.
+
 ## Development
 
 ```bash
@@ -97,6 +99,10 @@ npm test
 npm run test:coverage
 npm run benchmark
 ```
+
+### Supported matrix
+
+CI runs Node.js 22 on Ubuntu, Windows, and macOS, plus the Node.js 24 compatibility job on Ubuntu. Capability-sensitive symlink and permission assertions report a specific diagnostic when the host cannot provide that feature; unrelated filesystem and CRLF assertions continue to run. The thresholded coverage command enforces at least 85% line coverage and 75% branch coverage.
 
 ## Documentation
 

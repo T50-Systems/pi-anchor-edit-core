@@ -87,6 +87,12 @@ Use the filesystem adapter, which detects and preserves newline style. Include a
 
 The adapter refuses directories, symbolic links, special files, images, null-byte/binary data, and invalid UTF-8 that would decode with replacement characters. Successful edits use a same-directory temporary file and atomic replacement, preserve UTF-8 BOMs and existing permission bits, and clean up temporary files after success or handled failure. Atomic replacement intentionally breaks the edited path out of a hard-link set; other hard links continue to reference the unchanged original inode.
 
+### `[E_CONCURRENT_DESTINATION]`
+
+The destination changed after the filesystem adapter loaded it and before atomic replacement. The adapter detects changed bytes (using a SHA-256 digest, including same-size/coarse-timestamp changes), replacement identity/inode, deletion, and missing-to-created races. It preserves the concurrently changed destination, removes its temporary file, and returns this classified recovery error. Re-read, reassess the edit, and retry only with current anchors.
+
+This is best-effort optimistic detection, not compare-and-swap. A residual race remains between the final revalidation and `rename`, so a successful edit is not a guarantee that no concurrent writer intervened.
+
 ## Development
 
 ```bash

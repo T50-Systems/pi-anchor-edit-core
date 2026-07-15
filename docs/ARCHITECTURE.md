@@ -18,7 +18,8 @@
 3. The core parses references and verifies current line hashes/text hints.
 4. Operations are validated for overlap, uniqueness, and invalid rendered prefixes.
 5. The engine produces new content or throws a classified actionable error.
-6. The filesystem adapter classifies the path before decoding, preserves newline/BOM/mode behavior, and atomically replaces the selected directory entry.
+6. The filesystem adapter classifies the path before decoding, captures destination existence, file identity, byte length, and a SHA-256 digest, and preserves newline/BOM/mode behavior.
+7. Immediately before atomic replacement, it re-observes the destination and aborts with `[E_CONCURRENT_DESTINATION]` if existence, identity, length, or digest differs.
 
 ## Invariants
 
@@ -30,3 +31,5 @@
 - Symbolic links are rejected rather than followed. Atomic replacement of a hard-linked path changes only that path; sibling links retain the prior inode and content.
 - Binary, image, special-file, null-byte, and decode-loss inputs are rejected before any write.
 - Temporary files are created beside the destination so replacement stays on the same filesystem, and are removed after success or handled failure.
+- Revalidation uses byte-digest evidence rather than size or timestamps alone, so same-size changes and changes hidden by coarse timestamp resolution are detected.
+- The concurrency guard is optimistic and best-effort, not compare-and-swap: a destination can still change in the residual interval after revalidation and before `rename`. The library makes no false CAS guarantee.

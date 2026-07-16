@@ -164,6 +164,32 @@ test('detects a same-size content change even when timestamps are restored', asy
   await assertNoTemporaryFiles(dir);
 });
 
+test('detects a permission-only destination change without restoring the stale mode', async (t) => {
+  if (process.platform === 'win32') {
+    t.skip('permission-bit race assertion unavailable on Windows');
+    return;
+  }
+
+  const { dir, path } = await fixture();
+  const originalContent = 'one\ntwo';
+  await writeFile(path, originalContent);
+  await chmod(path, 0o644);
+  const preview = await new FilesystemPiClient().read({ path });
+
+  const client = new RevalidationRaceClient(async (destinationPath) => {
+    await chmod(destinationPath, 0o600);
+  });
+  const result = await client.edit({
+    path,
+    edits: [{ op: 'replace', pos: secondAnchor(preview), lines: ['patched'] }],
+  });
+
+  assert.equal(result, expectedConcurrentDestinationError(path));
+  assert.equal(await readFile(path, 'utf8'), originalContent);
+  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  await assertNoTemporaryFiles(dir);
+});
+
 test('detects a same-content destination replacement by inode', async () => {
   const { dir, path } = await fixture();
   const replacementPath = join(dir, 'replacement.txt');

@@ -13,7 +13,7 @@ function splitLines(text: string): string[] {
 
 type DestinationObservation =
   | { state: 'missing' }
-  | { state: 'present'; dev: bigint; ino: bigint; size: bigint; digest: string }
+  | { state: 'present'; dev: bigint; ino: bigint; size: bigint; mode: number; digest: string }
   | { state: 'unstable' };
 
 type LoadedText = { text: string; mode?: number; observation: DestinationObservation };
@@ -31,12 +31,17 @@ function sameIdentity(
   return left.dev === right.dev && left.ino === right.ino;
 }
 
+function permissionMode(stats: { mode: bigint }): number {
+  return Number(stats.mode & 0o7777n);
+}
+
 function sameObservation(left: DestinationObservation, right: DestinationObservation): boolean {
   if (left.state !== right.state) return false;
   if (left.state !== 'present' || right.state !== 'present') return left.state === 'missing';
   return (
     sameIdentity(left, right)
     && left.size === right.size
+    && left.mode === right.mode
     && left.digest === right.digest
   );
 }
@@ -98,14 +103,16 @@ async function loadText(path: string): Promise<LoadedText> {
       ) {
         throw concurrentDestinationError(path);
       }
+      const mode = permissionMode(verified);
       return {
         text: loaded.text,
-        mode: Number(verified.mode & 0o7777n),
+        mode,
         observation: {
           state: 'present',
           dev: verified.dev,
           ino: verified.ino,
           size: verified.size,
+          mode,
           digest: digestBytes(bytes),
         },
       };
@@ -153,6 +160,9 @@ export class FilesystemPiClient implements PiClient {
         || !sameIdentity(pathBefore, openedBefore)
         || !sameIdentity(openedBefore, openedAfter)
         || !sameIdentity(openedAfter, pathAfter)
+        || permissionMode(pathBefore) !== permissionMode(openedBefore)
+        || permissionMode(openedBefore) !== permissionMode(openedAfter)
+        || permissionMode(openedAfter) !== permissionMode(pathAfter)
         || openedAfter.size !== BigInt(bytes.length)
       ) {
         return { state: 'unstable' };
@@ -163,6 +173,7 @@ export class FilesystemPiClient implements PiClient {
         dev: pathAfter.dev,
         ino: pathAfter.ino,
         size: pathAfter.size,
+        mode: permissionMode(pathAfter),
         digest: digestBytes(bytes),
       };
     } catch (error) {

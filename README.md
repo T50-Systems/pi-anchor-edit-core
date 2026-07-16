@@ -89,7 +89,7 @@ The adapter refuses directories, symbolic links, special files, images, null-byt
 
 ### `[E_CONCURRENT_DESTINATION]`
 
-The destination changed after the filesystem adapter loaded it and before atomic replacement. The adapter detects changed bytes (using a SHA-256 digest, including same-size/coarse-timestamp changes), replacement identity/inode, deletion, and missing-to-created races. It preserves the concurrently changed destination, removes its temporary file, and returns this classified recovery error. Re-read, reassess the edit, and retry only with current anchors.
+The destination changed after the filesystem adapter loaded it and before atomic replacement. The adapter detects changed bytes (using a SHA-256 digest, including same-size/coarse-timestamp changes), permission-mode changes, replacement identity/inode, deletion, and missing-to-created races. It preserves the concurrently changed destination, including its current permission mode, removes its temporary file, and returns this classified recovery error. Re-read, reassess the edit, and retry only with current anchors.
 
 This is best-effort optimistic detection, not compare-and-swap. A residual race remains between the final revalidation and `rename`, so a successful edit is not a guarantee that no concurrent writer intervened.
 

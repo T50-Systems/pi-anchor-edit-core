@@ -15,6 +15,9 @@ function digestBytes(bytes) {
 function sameIdentity(left, right) {
     return left.dev === right.dev && left.ino === right.ino;
 }
+function permissionMode(stats) {
+    return Number(stats.mode & 4095n);
+}
 function sameObservation(left, right) {
     if (left.state !== right.state)
         return false;
@@ -22,6 +25,7 @@ function sameObservation(left, right) {
         return left.state === 'missing';
     return (sameIdentity(left, right)
         && left.size === right.size
+        && left.mode === right.mode
         && left.digest === right.digest);
 }
 function concurrentDestinationError(path) {
@@ -80,14 +84,16 @@ async function loadText(path) {
                 || !bytes.equals(decodedBytes)) {
                 throw concurrentDestinationError(path);
             }
+            const mode = permissionMode(verified);
             return {
                 text: loaded.text,
-                mode: Number(verified.mode & 4095n),
+                mode,
                 observation: {
                     state: 'present',
                     dev: verified.dev,
                     ino: verified.ino,
                     size: verified.size,
+                    mode,
                     digest: digestBytes(bytes),
                 },
             };
@@ -130,6 +136,9 @@ export class FilesystemPiClient {
                 || !sameIdentity(pathBefore, openedBefore)
                 || !sameIdentity(openedBefore, openedAfter)
                 || !sameIdentity(openedAfter, pathAfter)
+                || permissionMode(pathBefore) !== permissionMode(openedBefore)
+                || permissionMode(openedBefore) !== permissionMode(openedAfter)
+                || permissionMode(openedAfter) !== permissionMode(pathAfter)
                 || openedAfter.size !== BigInt(bytes.length)) {
                 return { state: 'unstable' };
             }
@@ -138,6 +147,7 @@ export class FilesystemPiClient {
                 dev: pathAfter.dev,
                 ino: pathAfter.ino,
                 size: pathAfter.size,
+                mode: permissionMode(pathAfter),
                 digest: digestBytes(bytes),
             };
         }

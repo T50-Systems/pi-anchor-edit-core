@@ -202,17 +202,39 @@ export class FilesystemPiClient {
         throw new FilesystemDurabilityError(unsupported ? 'E_DIRECTORY_SYNC_UNSUPPORTED' : 'E_DURABILITY_UNCONFIRMED', destinationPath, this.durability, destinationVisible, error);
     }
     async openParentBeforeRename(parentPath, destinationPath) {
+        let handle;
         try {
-            return await this.openParentDirectoryForSync(parentPath);
+            handle = await this.openParentDirectoryForSync(parentPath);
+            const stats = await handle.stat({ bigint: true });
+            if (!stats.isDirectory()) {
+                const error = new Error(`Parent path is no longer a directory: ${parentPath}`);
+                error.code = 'E_PARENT_DIRECTORY_CHANGED';
+                throw error;
+            }
+            return { handle, dev: stats.dev, ino: stats.ino };
         }
         catch (error) {
+            await handle?.close().catch(() => undefined);
             this.handleDirectorySyncFailure(error, destinationPath, false);
             return undefined;
         }
     }
-    async synchronizeParentAfterRename(handle, parentPath, destinationPath) {
+    async verifyPinnedParent(parentSync, parentPath, destinationPath, destinationVisible) {
+        let cause;
         try {
-            await this.synchronizeParentDirectory(handle, parentPath);
+            const stats = await lstat(parentPath, { bigint: true });
+            if (stats.isDirectory() && sameIdentity(parentSync, stats))
+                return;
+            cause = new Error(`Parent directory changed during replacement: ${parentPath}`);
+        }
+        catch (error) {
+            cause = error;
+        }
+        throw new FilesystemDurabilityError('E_DURABILITY_UNCONFIRMED', destinationPath, this.durability, destinationVisible, cause);
+    }
+    async synchronizeParentAfterRename(parentSync, parentPath, destinationPath) {
+        try {
+            await this.synchronizeParentDirectory(parentSync.handle, parentPath);
         }
         catch (error) {
             this.handleDirectorySyncFailure(error, destinationPath, true);
@@ -270,7 +292,7 @@ export class FilesystemPiClient {
         await mkdir(parent, { recursive: true });
         const temporaryPath = join(parent, `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
         let handle;
-        let parentHandle;
+        let parentSync;
         try {
             handle = await open(temporaryPath, 'wx', mode ?? 0o666);
             await handle.writeFile(content, 'utf8');
@@ -282,21 +304,25 @@ export class FilesystemPiClient {
             await handle.close();
             handle = undefined;
             if (this.durability === FILESYSTEM_DURABILITY_LEVELS.FILE_AND_PARENT_DIRECTORY) {
-                parentHandle = await this.openParentBeforeRename(parent, path);
+                parentSync = await this.openParentBeforeRename(parent, path);
             }
             await this.beforeDestinationRevalidation(path);
             const currentObservation = await this.observeDestination(path);
             if (!sameObservation(observation, currentObservation))
                 throw concurrentDestinationError(path);
-            // Best-effort only: the destination can still change after this check and before rename.
+            if (parentSync !== undefined) {
+                await this.verifyPinnedParent(parentSync, parent, path, false);
+            }
+            // Best-effort only: the destination or parent can still change during rename.
             await this.replaceTemporaryFile(temporaryPath, path);
-            if (parentHandle !== undefined) {
-                await this.synchronizeParentAfterRename(parentHandle, parent, path);
+            if (parentSync !== undefined) {
+                await this.verifyPinnedParent(parentSync, parent, path, true);
+                await this.synchronizeParentAfterRename(parentSync, parent, path);
             }
         }
         finally {
             await handle?.close().catch(() => undefined);
-            await parentHandle?.close().catch(() => undefined);
+            await parentSync?.handle.close().catch(() => undefined);
             await rm(temporaryPath, { force: true }).catch(() => undefined);
         }
     }

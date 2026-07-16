@@ -20,8 +20,8 @@
 5. The engine produces new content or throws a classified actionable error.
 6. The filesystem adapter classifies the path before decoding, captures destination existence, file identity, byte length, permission mode, and a SHA-256 digest, and preserves newline/BOM/mode behavior.
 7. The adapter writes a same-directory temporary file, applies preserved mode, and performs the configured file sync unless `none` was selected.
-8. For `file-and-parent-directory`, it opens and retains a handle to the direct parent before replacement. It then re-observes the destination and aborts with `[E_CONCURRENT_DESTINATION]` if existence, identity, length, permission mode, or digest differs; otherwise it renames the temporary file.
-9. `file-and-parent-directory` synchronizes the retained parent handle after rename, so path replacement cannot redirect the sync; only classified unsupported capability degrades under the configured policy.
+8. For `file-and-parent-directory`, it opens and retains a handle to the direct parent before replacement. It re-observes the destination and verifies the parent path still has the retained identity before rename.
+9. After rename it verifies parent identity again, then synchronizes the retained handle. A mismatch throws unconfirmed durability instead of syncing an unrelated directory; only classified unsupported capability degrades under policy.
 
 ## Invariants
 
@@ -36,7 +36,7 @@
 - Revalidation uses permission-mode and byte-digest evidence rather than size or timestamps alone, so permission-only changes, same-size content changes, and changes hidden by coarse timestamp resolution are detected.
 - The concurrency guard is optimistic and best-effort, not compare-and-swap: a destination can still change in the residual interval after revalidation and before `rename`. The library makes no false CAS guarantee.
 - Atomic visibility and crash durability are separate: `none` performs no explicit sync, `file` syncs the temporary file and remains the default, and `file-and-parent-directory` additionally syncs the direct parent after rename.
-- Preserved mode is applied before the selected final file sync. The direct parent is opened before rename and the retained handle is synchronized afterward.
+- Preserved mode is applied before the selected final file sync. Parent identity is checked around rename, and only the retained matching handle is synchronized afterward.
 - A parent-open error is pre-commit (`destinationVisible: false`); a parent-sync error is post-commit (`destinationVisible: true`) and is never rolled back.
 - Parent sync covers only the direct parent. Recursively created ancestors are not included in the durability claim.
 

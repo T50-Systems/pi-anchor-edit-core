@@ -37,6 +37,7 @@ export declare class FilesystemPiClient implements PiClient {
     protected synchronizeParentDirectory(handle: FileHandle, _parentPath: string): Promise<void>;
     private handleDirectorySyncFailure;
     private openParentBeforeRename;
+    private verifyPinnedParent;
     private synchronizeParentAfterRename;
     private observeDestination;
     private atomicWrite;

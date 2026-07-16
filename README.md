@@ -113,7 +113,7 @@ This is best-effort optimistic detection, not compare-and-swap. A residual race 
 
 ### `[E_DIRECTORY_SYNC_UNSUPPORTED]` / `[E_DURABILITY_UNCONFIRMED]`
 
-`FilesystemDurabilityError` distinguishes the commit boundary. If opening the parent fails before rename, `destinationVisible === false` and the original destination remains unchanged. If syncing the pinned parent handle fails after rename, `destinationVisible === true`; the edited destination is already visible but crash durability was not confirmed. Do not blindly replay or roll back a visible edit—re-read first. A classified unsupported operation is absorbed only when `unsupportedDirectorySync: 'degrade'`; other failures always throw.
+`FilesystemDurabilityError` distinguishes the commit boundary. If parent preparation/identity verification fails before rename, `destinationVisible === false`; if the pinned parent fails identity verification or sync after rename, `destinationVisible === true` and crash durability was not confirmed. Do not blindly replay or roll back a committed edit—re-read first. A classified unsupported operation is absorbed only when `unsupportedDirectorySync: 'degrade'`; parent changes and other failures always throw.
 
 ## Development
 

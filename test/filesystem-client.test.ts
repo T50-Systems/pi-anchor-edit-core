@@ -4,6 +4,7 @@ import {
   chmod,
   link,
   lstat,
+  mkdir,
   mkdtemp,
   readFile,
   readdir,
@@ -15,7 +16,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import {
   DEFAULT_FILESYSTEM_DURABILITY,
   FILESYSTEM_DURABILITY_LEVELS,
@@ -120,6 +121,29 @@ class FailingDirectoryOpenClient extends FilesystemPiClient {
     error.code = 'EISDIR';
     error.syscall = 'open';
     throw error;
+  }
+}
+
+class ParentReplacementDuringRenameClient extends FilesystemPiClient {
+  movedParent: string | undefined;
+
+  protected override async replaceTemporaryFile(
+    temporaryPath: string,
+    destinationPath: string,
+  ): Promise<void> {
+    const parent = dirname(destinationPath);
+    const movedParent = `${parent}-moved`;
+    this.movedParent = movedParent;
+    await rename(parent, movedParent);
+    await mkdir(parent);
+    await link(join(movedParent, basename(destinationPath)), destinationPath);
+    const movedTemporaryPath = join(movedParent, basename(temporaryPath));
+    await link(movedTemporaryPath, temporaryPath);
+    try {
+      await super.replaceTemporaryFile(temporaryPath, destinationPath);
+    } finally {
+      await rm(movedTemporaryPath, { force: true });
+    }
   }
 }
 
@@ -326,6 +350,39 @@ test('strict unsupported parent open fails before rename and cleans the temporar
 
   assert.equal(await readFile(path, 'utf8'), 'one\ntwo');
   await assertNoTemporaryFiles(dir);
+});
+
+test('reports unconfirmed durability when the parent changes during rename', async (t) => {
+  if (process.platform === 'win32') {
+    t.skip('Windows does not permit renaming the pinned open parent directory');
+    return;
+  }
+
+  const { dir, path } = await fixture();
+  await writeFile(path, 'one\ntwo');
+  const client = new ParentReplacementDuringRenameClient({
+    durability: FILESYSTEM_DURABILITY_LEVELS.FILE_AND_PARENT_DIRECTORY,
+  });
+  const preview = await client.read({ path });
+
+  await assert.rejects(
+    () => client.edit({
+      path,
+      edits: [{ op: 'replace', pos: secondAnchor(preview), lines: ['patched'] }],
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof FilesystemDurabilityError);
+      assert.equal(error.code, 'E_DURABILITY_UNCONFIRMED');
+      assert.equal(error.destinationVisible, true);
+      return true;
+    },
+  );
+
+  assert.equal(await readFile(path, 'utf8'), 'one\npatched');
+  await assertNoTemporaryFiles(dir);
+  if (client.movedParent !== undefined) {
+    await rm(client.movedParent, { recursive: true, force: true });
+  }
 });
 
 test('unclassified post-rename sync failure reports visible but unconfirmed durability', async () => {

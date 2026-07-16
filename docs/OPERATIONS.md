@@ -8,7 +8,7 @@ The filesystem adapter performs same-directory temporary-file replacement. It re
 
 ## Durability selection
 
-`new FilesystemPiClient()` preserves the historical `file` durability default: write, apply preserved mode, sync the temporary file, then rename. Set `durability` to `none` to omit explicit syncs or `file-and-parent-directory` to open and pin the direct parent before rename and sync that retained handle afterward. The latter does not synchronize recursively created ancestor entries.
+`new FilesystemPiClient()` preserves the historical `file` durability default: write, apply preserved mode, sync the temporary file, then rename. Set `durability` to `none` to omit explicit syncs or `file-and-parent-directory` to retain the direct parent before rename, verify its path identity around rename, and sync that handle afterward. The latter does not synchronize recursively created ancestor entries.
 
 Parent-directory support is detected by attempting the real operation. `unsupportedDirectorySync: 'degrade'` (default) absorbs only a classified unsupported-capability error and completes at file durability. `strict` throws instead. Unclassified I/O or permission failures always throw. See [`ADR 0001`](adr/0001-filesystem-crash-durability.md).
 
@@ -30,7 +30,7 @@ Parent-directory support is detected by attempting the real operation. `unsuppor
 | `[E_UNSUPPORTED_FILE]` | The path is a directory, symbolic link, or unsupported special file. | Resolve and authorize a regular-file path explicitly; do not weaken the classifier or follow the link implicitly. |
 | `[E_CONCURRENT_DESTINATION]` | The destination's existence, identity, length, permission mode, or byte digest changed after it was loaded and before replacement. | Preserve the concurrent destination, re-read it, reassess intent, and retry only with current anchors. |
 | `[E_DIRECTORY_SYNC_UNSUPPORTED]` | Strict parent-directory open or sync was unsupported. `destinationVisible` identifies whether rename occurred. | If false, the original remains unchanged. If true, do not replay blindly: re-read and decide whether file durability is acceptable or provision a supported filesystem. |
-| `[E_DURABILITY_UNCONFIRMED]` | Parent-directory open/sync failed for an unclassified reason. `destinationVisible` identifies whether rename occurred. | Preserve/re-read a visible destination; otherwise investigate the underlying `cause` before retrying. |
+| `[E_DURABILITY_UNCONFIRMED]` | Parent-directory open/sync failed or parent identity changed around rename. `destinationVisible` identifies whether rename occurred. | Preserve/re-read a visible destination; otherwise investigate the underlying `cause` before retrying. |
 
 `Operation aborted` means the supplied abort signal was already cancelled; leave content unchanged, determine whether the caller still wants the operation, then re-read before retrying.
 
@@ -40,7 +40,7 @@ Node filesystem errors such as `EACCES`, `EPERM`, `EROFS`, `ENOSPC`, `EMFILE`, a
 
 The optimistic guard deliberately compares permission mode and a byte digest rather than trusting size and timestamps, so permission-only changes, same-size edits, and coarse-time metadata collisions are detected. It is still a best-effort check, not an atomic compare-and-swap: another writer can change the destination after revalidation and before `rename`. Callers must not treat a successful edit as proof that no writer raced in that residual interval.
 
-`FilesystemDurabilityError` exposes the destination path, requested durability, stable error code, original `cause`, and commit boundary. `destinationVisible: false` means parent open failed before rename and cleanup preserved the original; `true` means the retained parent handle failed to sync after rename, so cleanup never removes or rolls back the visible destination. A strict Windows parent sync normally reports `E_DIRECTORY_SYNC_UNSUPPORTED` with an `EPERM`/`fsync` cause; degrade mode treats that specific capability result as file durability.
+`FilesystemDurabilityError` exposes the destination path, requested durability, stable error code, original `cause`, and commit boundary. `destinationVisible: false` means the durability step failed before rename; `true` means rename returned before parent sync or identity confirmation failed, so cleanup never removes or rolls back the committed destination. A strict Windows parent sync normally reports `E_DIRECTORY_SYNC_UNSUPPORTED` with an `EPERM`/`fsync` cause; degrade mode treats that specific capability result as file durability.
 
 A successful sync reports only what the operating system and storage stack make observable. Hardware, network filesystems, virtualized filesystems, and mount options can weaken persistence guarantees.
 

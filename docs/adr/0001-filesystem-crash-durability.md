@@ -37,12 +37,13 @@ The write sequence is:
 3. perform the selected final temporary-file sync (`file` and `file-and-parent-directory` only);
 4. close the temporary-file handle;
 5. for `file-and-parent-directory`, open and retain a handle to the destination's direct parent;
-6. revalidate the destination and atomically rename;
-7. for `file-and-parent-directory`, sync the retained parent handle and close it.
+6. revalidate the destination and verify that the retained handle still matches the parent path;
+7. atomically rename;
+8. verify the parent identity again, then sync the retained handle and close it.
 
 Applying mode before the final file sync includes the mode metadata in the best available file durability boundary.
 
-Opening the parent before rename pins the directory that receives the replacement. Reopening the parent path afterward could synchronize a different directory if another process renamed or replaced that path.
+Opening the parent before rename pins a candidate directory, while identity checks immediately before and after rename prevent a replaced parent path from making the operation sync an unrelated directory and falsely report success. Reopening the parent path only afterward would not provide either property.
 
 ### Unsupported parent-directory synchronization
 
@@ -58,7 +59,7 @@ No parent-directory capability result is cached globally because different paths
 
 Parent-directory sync occurs after rename, so any failure from that step happens after the destination has been committed and is visible. The operation throws a `FilesystemDurabilityError` with `destinationVisible: true`; it does not roll back, delete, or restore the visible destination. Retrying the original edit blindly is unsafe. Callers must inspect/re-read the destination and decide whether another durability attempt or edit is appropriate.
 
-The retained handle prevents a path replacement between rename and sync from redirecting synchronization to a different directory.
+The retained handle plus pre/post-rename identity checks prevent a path replacement from redirecting synchronization or producing a false durability success. A detected mismatch throws `E_DURABILITY_UNCONFIRMED`; `destinationVisible` reports whether rename had already returned.
 
 In `degrade` mode, only a classified unsupported-capability result is absorbed. Other post-rename failures still throw `FilesystemDurabilityError` and carry the original error as `cause`.
 

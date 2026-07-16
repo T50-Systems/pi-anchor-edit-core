@@ -1,5 +1,5 @@
-import { chmod, mkdir, open, rename, rm, stat } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { chmod, lstat, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
 import { basename, dirname, join } from 'node:path';
 import { formatAnchors } from './anchors.js';
 import { loadFileKindAndText } from './file-kind.js';
@@ -8,37 +8,159 @@ import { detectLineEnding, normalizeToLF, restoreLineEndings } from './text.js';
 function splitLines(text) {
     return text.length === 0 ? [] : text.split(/\r?\n/);
 }
+const CONCURRENT_DESTINATION_ERROR = 'E_CONCURRENT_DESTINATION';
+function digestBytes(bytes) {
+    return createHash('sha256').update(bytes).digest('hex');
+}
+function sameIdentity(left, right) {
+    return left.dev === right.dev && left.ino === right.ino;
+}
+function permissionMode(stats) {
+    return Number(stats.mode & 4095n);
+}
+function sameObservation(left, right) {
+    if (left.state !== right.state)
+        return false;
+    if (left.state !== 'present' || right.state !== 'present')
+        return left.state === 'missing';
+    return (sameIdentity(left, right)
+        && left.size === right.size
+        && left.mode === right.mode
+        && left.digest === right.digest);
+}
+function concurrentDestinationError(path) {
+    return new Error(`[${CONCURRENT_DESTINATION_ERROR}] Refusing to replace ${path}: destination changed after it was loaded. Re-read and retry with current anchors.`);
+}
 async function loadText(path) {
+    let before;
     try {
-        const loaded = await loadFileKindAndText(path);
-        switch (loaded.kind) {
-            case 'text':
-                if (loaded.hadUtf8DecodeErrors) {
-                    throw new Error(`[E_DECODE_LOSS] Refusing to rewrite ${path}: invalid UTF-8 would be replaced.`);
-                }
-                return { text: loaded.text, mode: (await stat(path)).mode & 0o7777 };
-            case 'directory':
-                throw new Error(`[E_UNSUPPORTED_FILE] Refusing to read directory: ${path}`);
-            case 'symlink':
-                throw new Error(`[E_UNSUPPORTED_FILE] Refusing to follow symbolic link: ${path}`);
-            case 'image':
-                throw new Error(`[E_BINARY_FILE] Refusing to read image (${loaded.mimeType}): ${path}`);
-            case 'binary':
-                throw new Error(`[E_BINARY_FILE] Refusing to read binary file (${loaded.description}): ${path}`);
-        }
+        before = await lstat(path, { bigint: true });
     }
     catch (error) {
         if (error.code === 'ENOENT') {
-            return { text: '' };
+            return { text: '', observation: { state: 'missing' } };
         }
         throw error;
     }
+    let loaded;
+    try {
+        loaded = await loadFileKindAndText(path);
+    }
+    catch (error) {
+        if (error.code === 'ENOENT')
+            throw concurrentDestinationError(path);
+        throw error;
+    }
+    let after;
+    try {
+        after = await lstat(path, { bigint: true });
+    }
+    catch (error) {
+        if (error.code === 'ENOENT')
+            throw concurrentDestinationError(path);
+        throw error;
+    }
+    if (!sameIdentity(before, after))
+        throw concurrentDestinationError(path);
+    switch (loaded.kind) {
+        case 'text': {
+            if (loaded.hadUtf8DecodeErrors) {
+                throw new Error(`[E_DECODE_LOSS] Refusing to rewrite ${path}: invalid UTF-8 would be replaced.`);
+            }
+            let bytes;
+            let verified;
+            try {
+                bytes = await readFile(path);
+                verified = await lstat(path, { bigint: true });
+            }
+            catch (error) {
+                if (error.code === 'ENOENT')
+                    throw concurrentDestinationError(path);
+                throw error;
+            }
+            const decodedBytes = Buffer.from(loaded.text, 'utf8');
+            if (!sameIdentity(after, verified)
+                || verified.size !== BigInt(bytes.length)
+                || !bytes.equals(decodedBytes)) {
+                throw concurrentDestinationError(path);
+            }
+            const mode = permissionMode(verified);
+            return {
+                text: loaded.text,
+                mode,
+                observation: {
+                    state: 'present',
+                    dev: verified.dev,
+                    ino: verified.ino,
+                    size: verified.size,
+                    mode,
+                    digest: digestBytes(bytes),
+                },
+            };
+        }
+        case 'directory':
+            throw new Error(`[E_UNSUPPORTED_FILE] Refusing to read directory: ${path}`);
+        case 'symlink':
+            throw new Error(`[E_UNSUPPORTED_FILE] Refusing to follow symbolic link: ${path}`);
+        case 'image':
+            throw new Error(`[E_BINARY_FILE] Refusing to read image (${loaded.mimeType}): ${path}`);
+        case 'binary':
+            throw new Error(`[E_BINARY_FILE] Refusing to read binary file (${loaded.description}): ${path}`);
+    }
 }
 export class FilesystemPiClient {
+    async beforeDestinationRevalidation(_destinationPath) { }
     async replaceTemporaryFile(temporaryPath, destinationPath) {
         await rename(temporaryPath, destinationPath);
     }
-    async atomicWrite(path, content, mode) {
+    async observeDestination(path) {
+        let pathBefore;
+        try {
+            pathBefore = await lstat(path, { bigint: true });
+        }
+        catch (error) {
+            if (error.code === 'ENOENT')
+                return { state: 'missing' };
+            throw error;
+        }
+        if (!pathBefore.isFile())
+            return { state: 'unstable' };
+        let handle;
+        try {
+            handle = await open(path, 'r');
+            const openedBefore = await handle.stat({ bigint: true });
+            const bytes = await handle.readFile();
+            const openedAfter = await handle.stat({ bigint: true });
+            const pathAfter = await lstat(path, { bigint: true });
+            if (!pathAfter.isFile()
+                || !sameIdentity(pathBefore, openedBefore)
+                || !sameIdentity(openedBefore, openedAfter)
+                || !sameIdentity(openedAfter, pathAfter)
+                || permissionMode(pathBefore) !== permissionMode(openedBefore)
+                || permissionMode(openedBefore) !== permissionMode(openedAfter)
+                || permissionMode(openedAfter) !== permissionMode(pathAfter)
+                || openedAfter.size !== BigInt(bytes.length)) {
+                return { state: 'unstable' };
+            }
+            return {
+                state: 'present',
+                dev: pathAfter.dev,
+                ino: pathAfter.ino,
+                size: pathAfter.size,
+                mode: permissionMode(pathAfter),
+                digest: digestBytes(bytes),
+            };
+        }
+        catch (error) {
+            if (error.code === 'ENOENT')
+                return { state: 'missing' };
+            throw error;
+        }
+        finally {
+            await handle?.close().catch(() => undefined);
+        }
+    }
+    async atomicWrite(path, content, mode, observation) {
         const parent = dirname(path);
         await mkdir(parent, { recursive: true });
         const temporaryPath = join(parent, `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
@@ -51,6 +173,11 @@ export class FilesystemPiClient {
             handle = undefined;
             if (mode !== undefined)
                 await chmod(temporaryPath, mode);
+            await this.beforeDestinationRevalidation(path);
+            const currentObservation = await this.observeDestination(path);
+            if (!sameObservation(observation, currentObservation))
+                throw concurrentDestinationError(path);
+            // Best-effort only: the destination can still change after this check and before rename.
             await this.replaceTemporaryFile(temporaryPath, path);
         }
         finally {
@@ -66,7 +193,17 @@ export class FilesystemPiClient {
         return formatAnchors(slice, offset);
     }
     async edit({ path, edits }) {
-        const { text: raw, mode } = await loadText(path);
+        let loaded;
+        try {
+            loaded = await loadText(path);
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (message.startsWith(`[${CONCURRENT_DESTINATION_ERROR}]`))
+                return message;
+            throw error;
+        }
+        const { text: raw, mode, observation } = loaded;
         const ending = detectLineEnding(raw);
         let normalized = normalizeToLF(raw);
         try {
@@ -79,7 +216,15 @@ export class FilesystemPiClient {
                 return message;
             throw error;
         }
-        await this.atomicWrite(path, restoreLineEndings(normalized, ending), mode);
+        try {
+            await this.atomicWrite(path, restoreLineEndings(normalized, ending), mode, observation);
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (message.startsWith(`[${CONCURRENT_DESTINATION_ERROR}]`))
+                return message;
+            throw error;
+        }
         return formatAnchors(splitLines(normalized));
     }
 }

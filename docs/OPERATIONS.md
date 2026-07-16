@@ -4,7 +4,7 @@
 
 Authorize the caller-selected path, keep a recoverable copy when content is important, read immediately before editing, and use only anchors from that read. Do not place secrets or private file content in bug reports. Use synthetic fixtures when reproducing failures.
 
-The filesystem adapter performs same-directory temporary-file replacement. A handled failure removes its temporary file; the original path remains unchanged when replacement fails. Symbolic links are rejected. Editing one name in a hard-link set replaces only that directory entry, so sibling hard links retain the old inode and content.
+The filesystem adapter performs same-directory temporary-file replacement. It records destination existence, file identity, byte length, permission mode, and a SHA-256 byte digest when loading, then revalidates immediately before replacement. A detected content change, permission-mode change, destination replacement, deletion, or missing-to-created race preserves the concurrent state and removes the adapter's temporary file. Symbolic links are rejected. Editing one name in a hard-link set replaces only that directory entry, so sibling hard links retain the old inode and content.
 
 ## Classified errors
 
@@ -22,12 +22,15 @@ The filesystem adapter performs same-directory temporary-file replacement. A han
 | `[E_BINARY_FILE]` | The classifier detected an image, binary MIME type, or null bytes. | Do not edit with this library. Select a format-aware binary tool and preserve the original. |
 | `[E_DECODE_LOSS]` | UTF-8 decoding would replace invalid bytes. | Do not rewrite. Determine the real encoding and use an encoding-aware conversion with an explicit backup. |
 | `[E_UNSUPPORTED_FILE]` | The path is a directory, symbolic link, or unsupported special file. | Resolve and authorize a regular-file path explicitly; do not weaken the classifier or follow the link implicitly. |
+| `[E_CONCURRENT_DESTINATION]` | The destination's existence, identity, length, permission mode, or byte digest changed after it was loaded and before replacement. | Preserve the concurrent destination, re-read it, reassess intent, and retry only with current anchors. |
 
 `Operation aborted` means the supplied abort signal was already cancelled; leave content unchanged, determine whether the caller still wants the operation, then re-read before retrying.
 
 ## Filesystem failures
 
 Node filesystem errors such as `EACCES`, `EPERM`, `EROFS`, `ENOSPC`, `EMFILE`, and unexpected `ENOENT` are propagated. Do not elevate privileges automatically. Confirm directory authorization and available space, preserve the original, inspect the same directory for a `.filename.<pid>.<uuid>.tmp` residue after an unhandled process termination, and remove a residue only after confirming no live process owns it. A missing path is treated as empty for an intentional prepend/append creation; callers must distinguish intentional creation from a misspelled path.
+
+The optimistic guard deliberately compares permission mode and a byte digest rather than trusting size and timestamps, so permission-only changes, same-size edits, and coarse-time metadata collisions are detected. It is still a best-effort check, not an atomic compare-and-swap: another writer can change the destination after revalidation and before `rename`. Callers must not treat a successful edit as proof that no writer raced in that residual interval.
 
 ## Escalation data
 

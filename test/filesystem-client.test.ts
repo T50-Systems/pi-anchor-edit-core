@@ -7,8 +7,11 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  rename,
+  rm,
   stat,
   symlink,
+  utimes,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -30,6 +33,24 @@ class FailingReplacementClient extends FilesystemPiClient {
   protected override async replaceTemporaryFile(): Promise<void> {
     throw new Error('simulated replacement failure');
   }
+}
+
+class RevalidationRaceClient extends FilesystemPiClient {
+  constructor(private readonly race: (destinationPath: string) => Promise<void>) {
+    super();
+  }
+
+  protected override async beforeDestinationRevalidation(destinationPath: string): Promise<void> {
+    await this.race(destinationPath);
+  }
+}
+
+function expectedConcurrentDestinationError(path: string): string {
+  return `[E_CONCURRENT_DESTINATION] Refusing to replace ${path}: destination changed after it was loaded. Re-read and retry with current anchors.`;
+}
+
+async function assertNoTemporaryFiles(dir: string): Promise<void> {
+  assert.deepEqual((await readdir(dir)).filter((entry) => entry.includes('.tmp')), []);
 }
 
 test('classifies empty and ordinary UTF-8 text', async () => {
@@ -119,6 +140,109 @@ test('successful replacement leaves no temporary file', async () => {
   const preview = await client.read({ path });
   await client.edit({ path, edits: [{ op: 'replace', pos: secondAnchor(preview), lines: ['patched'] }] });
   assert.deepEqual((await readdir(dir)).filter((entry) => entry.includes('.tmp')), []);
+});
+
+test('detects a same-size content change even when timestamps are restored', async () => {
+  const { dir, path } = await fixture();
+  await writeFile(path, 'one\ntwo');
+  const preview = await new FilesystemPiClient().read({ path });
+  const before = await stat(path);
+  const concurrentContent = 'red\nblu';
+  assert.equal(Buffer.byteLength(concurrentContent), Buffer.byteLength('one\ntwo'));
+
+  const client = new RevalidationRaceClient(async (destinationPath) => {
+    await writeFile(destinationPath, concurrentContent);
+    await utimes(destinationPath, before.atime, before.mtime);
+  });
+  const result = await client.edit({
+    path,
+    edits: [{ op: 'replace', pos: secondAnchor(preview), lines: ['patched'] }],
+  });
+
+  assert.equal(result, expectedConcurrentDestinationError(path));
+  assert.equal(await readFile(path, 'utf8'), concurrentContent);
+  await assertNoTemporaryFiles(dir);
+});
+
+test('detects a permission-only destination change without restoring the stale mode', async (t) => {
+  if (process.platform === 'win32') {
+    t.skip('permission-bit race assertion unavailable on Windows');
+    return;
+  }
+
+  const { dir, path } = await fixture();
+  const originalContent = 'one\ntwo';
+  await writeFile(path, originalContent);
+  await chmod(path, 0o644);
+  const preview = await new FilesystemPiClient().read({ path });
+
+  const client = new RevalidationRaceClient(async (destinationPath) => {
+    await chmod(destinationPath, 0o600);
+  });
+  const result = await client.edit({
+    path,
+    edits: [{ op: 'replace', pos: secondAnchor(preview), lines: ['patched'] }],
+  });
+
+  assert.equal(result, expectedConcurrentDestinationError(path));
+  assert.equal(await readFile(path, 'utf8'), originalContent);
+  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  await assertNoTemporaryFiles(dir);
+});
+
+test('detects a same-content destination replacement by inode', async () => {
+  const { dir, path } = await fixture();
+  const replacementPath = join(dir, 'replacement.txt');
+  const originalContent = 'one\ntwo';
+  await writeFile(path, originalContent);
+  const before = await lstat(path);
+  const preview = await new FilesystemPiClient().read({ path });
+
+  const client = new RevalidationRaceClient(async (destinationPath) => {
+    await writeFile(replacementPath, originalContent);
+    await rename(replacementPath, destinationPath);
+  });
+  const result = await client.edit({
+    path,
+    edits: [{ op: 'replace', pos: secondAnchor(preview), lines: ['patched'] }],
+  });
+
+  assert.equal(result, expectedConcurrentDestinationError(path));
+  assert.equal(await readFile(path, 'utf8'), originalContent);
+  assert.notEqual((await lstat(path)).ino, before.ino);
+  await assertNoTemporaryFiles(dir);
+});
+
+test('detects destination deletion and does not recreate it', async () => {
+  const { dir, path } = await fixture();
+  await writeFile(path, 'one\ntwo');
+  const preview = await new FilesystemPiClient().read({ path });
+  const client = new RevalidationRaceClient(async (destinationPath) => {
+    await rm(destinationPath);
+  });
+
+  const result = await client.edit({
+    path,
+    edits: [{ op: 'replace', pos: secondAnchor(preview), lines: ['patched'] }],
+  });
+
+  assert.equal(result, expectedConcurrentDestinationError(path));
+  await assert.rejects(() => readFile(path), { code: 'ENOENT' });
+  await assertNoTemporaryFiles(dir);
+});
+
+test('detects a missing destination created before replacement', async () => {
+  const { dir, path } = await fixture('nested/new.txt');
+  const concurrentContent = 'created by another writer';
+  const client = new RevalidationRaceClient(async (destinationPath) => {
+    await writeFile(destinationPath, concurrentContent);
+  });
+
+  const result = await client.edit({ path, edits: [{ op: 'prepend', lines: ['ours'] }] });
+
+  assert.equal(result, expectedConcurrentDestinationError(path));
+  assert.equal(await readFile(path, 'utf8'), concurrentContent);
+  await assertNoTemporaryFiles(join(dir, 'nested'));
 });
 
 test('filesystem client supports every edit operation and returns classified failures', async () => {

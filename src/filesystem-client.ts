@@ -1,4 +1,5 @@
-import { chmod, lstat, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
+import { chmod, lstat, mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises';
+import type { FileHandle } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { basename, dirname, join } from 'node:path';
 import { formatAnchors } from './anchors.js';
@@ -6,6 +7,60 @@ import { loadFileKindAndText } from './file-kind.js';
 import { applyHashlineEdits, resolveEditAnchors, type HashlineToolEdit } from './hashline.js';
 import { detectLineEnding, normalizeToLF, restoreLineEndings } from './text.js';
 import type { EditParams, PiClient, ReadParams } from './types.js';
+
+export const FILESYSTEM_DURABILITY_LEVELS = {
+  NONE: 'none',
+  FILE: 'file',
+  FILE_AND_PARENT_DIRECTORY: 'file-and-parent-directory',
+} as const;
+
+export type FilesystemDurability =
+  typeof FILESYSTEM_DURABILITY_LEVELS[keyof typeof FILESYSTEM_DURABILITY_LEVELS];
+
+export const DEFAULT_FILESYSTEM_DURABILITY: FilesystemDurability =
+  FILESYSTEM_DURABILITY_LEVELS.FILE;
+
+export const UNSUPPORTED_DIRECTORY_SYNC_BEHAVIORS = {
+  DEGRADE: 'degrade',
+  STRICT: 'strict',
+} as const;
+
+export type UnsupportedDirectorySyncBehavior =
+  typeof UNSUPPORTED_DIRECTORY_SYNC_BEHAVIORS[keyof typeof UNSUPPORTED_DIRECTORY_SYNC_BEHAVIORS];
+
+export const DEFAULT_UNSUPPORTED_DIRECTORY_SYNC_BEHAVIOR: UnsupportedDirectorySyncBehavior =
+  UNSUPPORTED_DIRECTORY_SYNC_BEHAVIORS.DEGRADE;
+
+export type FilesystemPiClientConfig = {
+  durability?: FilesystemDurability;
+  unsupportedDirectorySync?: UnsupportedDirectorySyncBehavior;
+};
+
+export type FilesystemDurabilityErrorCode =
+  | 'E_DIRECTORY_SYNC_UNSUPPORTED'
+  | 'E_DURABILITY_UNCONFIRMED';
+
+export class FilesystemDurabilityError extends Error {
+  constructor(
+    readonly code: FilesystemDurabilityErrorCode,
+    readonly destinationPath: string,
+    readonly durability: FilesystemDurability,
+    readonly destinationVisible: boolean,
+    cause: unknown,
+  ) {
+    const detail = code === 'E_DIRECTORY_SYNC_UNSUPPORTED'
+      ? 'parent-directory synchronization is unsupported'
+      : 'parent-directory synchronization failed';
+    const boundary = destinationVisible
+      ? `${destinationPath} was replaced and is visible`
+      : `${destinationPath} was not replaced`;
+    const recovery = destinationVisible
+      ? 'Crash durability is not confirmed. Re-read before retrying.'
+      : 'The original destination is unchanged.';
+    super(`[${code}] ${boundary}, but ${detail}. ${recovery}`, { cause });
+    this.name = 'FilesystemDurabilityError';
+  }
+}
 
 function splitLines(text: string): string[] {
   return text.length === 0 ? [] : text.split(/\r?\n/);
@@ -17,6 +72,7 @@ type DestinationObservation =
   | { state: 'unstable' };
 
 type LoadedText = { text: string; mode?: number; observation: DestinationObservation };
+type ParentDirectorySync = { handle: FileHandle; dev: bigint; ino: bigint };
 
 const CONCURRENT_DESTINATION_ERROR = 'E_CONCURRENT_DESTINATION';
 
@@ -129,11 +185,147 @@ async function loadText(path: string): Promise<LoadedText> {
 }
 
 
+const UNSUPPORTED_DIRECTORY_SYNC_CODES = new Set([
+  'EBADF',
+  'EISDIR',
+  'EINVAL',
+  'ENOSYS',
+  'ENOTSUP',
+  'EOPNOTSUPP',
+]);
+
+function isUnsupportedDirectorySyncError(error: unknown): boolean {
+  const { code, syscall } = (error as NodeJS.ErrnoException | undefined) ?? {};
+  return (typeof code === 'string' && UNSUPPORTED_DIRECTORY_SYNC_CODES.has(code))
+    || (process.platform === 'win32' && code === 'EPERM' && syscall === 'fsync');
+}
+
+function isFilesystemDurability(value: unknown): value is FilesystemDurability {
+  return Object.values(FILESYSTEM_DURABILITY_LEVELS).includes(value as FilesystemDurability);
+}
+
+function isUnsupportedDirectorySyncBehavior(value: unknown): value is UnsupportedDirectorySyncBehavior {
+  return Object.values(UNSUPPORTED_DIRECTORY_SYNC_BEHAVIORS)
+    .includes(value as UnsupportedDirectorySyncBehavior);
+}
+
 export class FilesystemPiClient implements PiClient {
+  private readonly durability: FilesystemDurability;
+  private readonly unsupportedDirectorySync: UnsupportedDirectorySyncBehavior;
+
+  constructor(config: FilesystemPiClientConfig = {}) {
+    const durability = config.durability ?? DEFAULT_FILESYSTEM_DURABILITY;
+    const unsupportedDirectorySync = config.unsupportedDirectorySync
+      ?? DEFAULT_UNSUPPORTED_DIRECTORY_SYNC_BEHAVIOR;
+    if (!isFilesystemDurability(durability)) {
+      throw new TypeError(`Unsupported filesystem durability level: ${String(durability)}`);
+    }
+    if (!isUnsupportedDirectorySyncBehavior(unsupportedDirectorySync)) {
+      throw new TypeError(
+        `Unsupported directory-sync behavior: ${String(unsupportedDirectorySync)}`,
+      );
+    }
+    this.durability = durability;
+    this.unsupportedDirectorySync = unsupportedDirectorySync;
+  }
+
   protected async beforeDestinationRevalidation(_destinationPath: string): Promise<void> {}
+
+  protected async applyTemporaryFileMode(temporaryPath: string, mode: number): Promise<void> {
+    await chmod(temporaryPath, mode);
+  }
+
+  protected async synchronizeTemporaryFile(handle: FileHandle): Promise<void> {
+    await handle.sync();
+  }
 
   protected async replaceTemporaryFile(temporaryPath: string, destinationPath: string): Promise<void> {
     await rename(temporaryPath, destinationPath);
+  }
+
+  protected async openParentDirectoryForSync(parentPath: string): Promise<FileHandle> {
+    return open(parentPath, 'r');
+  }
+
+  protected async synchronizeParentDirectory(
+    handle: FileHandle,
+    _parentPath: string,
+  ): Promise<void> {
+    await handle.sync();
+  }
+
+  private handleDirectorySyncFailure(
+    error: unknown,
+    destinationPath: string,
+    destinationVisible: boolean,
+  ): void {
+    const unsupported = isUnsupportedDirectorySyncError(error);
+    if (unsupported && this.unsupportedDirectorySync === UNSUPPORTED_DIRECTORY_SYNC_BEHAVIORS.DEGRADE) {
+      return;
+    }
+    throw new FilesystemDurabilityError(
+      unsupported ? 'E_DIRECTORY_SYNC_UNSUPPORTED' : 'E_DURABILITY_UNCONFIRMED',
+      destinationPath,
+      this.durability,
+      destinationVisible,
+      error,
+    );
+  }
+
+  private async openParentBeforeRename(
+    parentPath: string,
+    destinationPath: string,
+  ): Promise<ParentDirectorySync | undefined> {
+    let handle: FileHandle | undefined;
+    try {
+      handle = await this.openParentDirectoryForSync(parentPath);
+      const stats = await handle.stat({ bigint: true });
+      if (!stats.isDirectory()) {
+        const error = new Error(`Parent path is no longer a directory: ${parentPath}`) as NodeJS.ErrnoException;
+        error.code = 'E_PARENT_DIRECTORY_CHANGED';
+        throw error;
+      }
+      return { handle, dev: stats.dev, ino: stats.ino };
+    } catch (error) {
+      await handle?.close().catch(() => undefined);
+      this.handleDirectorySyncFailure(error, destinationPath, false);
+      return undefined;
+    }
+  }
+
+  private async verifyPinnedParent(
+    parentSync: ParentDirectorySync,
+    parentPath: string,
+    destinationPath: string,
+    destinationVisible: boolean,
+  ): Promise<void> {
+    let cause: unknown;
+    try {
+      const stats = await stat(parentPath, { bigint: true });
+      if (stats.isDirectory() && sameIdentity(parentSync, stats)) return;
+      cause = new Error(`Parent directory changed during replacement: ${parentPath}`);
+    } catch (error) {
+      cause = error;
+    }
+    throw new FilesystemDurabilityError(
+      'E_DURABILITY_UNCONFIRMED',
+      destinationPath,
+      this.durability,
+      destinationVisible,
+      cause,
+    );
+  }
+
+  private async synchronizeParentAfterRename(
+    parentSync: ParentDirectorySync,
+    parentPath: string,
+    destinationPath: string,
+  ): Promise<void> {
+    try {
+      await this.synchronizeParentDirectory(parentSync.handle, parentPath);
+    } catch (error) {
+      this.handleDirectorySyncFailure(error, destinationPath, true);
+    }
   }
 
   private async observeDestination(path: string): Promise<DestinationObservation> {
@@ -193,22 +385,36 @@ export class FilesystemPiClient implements PiClient {
     const parent = dirname(path);
     await mkdir(parent, { recursive: true });
     const temporaryPath = join(parent, `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
-    let handle: Awaited<ReturnType<typeof open>> | undefined;
+    let handle: FileHandle | undefined;
+    let parentSync: ParentDirectorySync | undefined;
 
     try {
       handle = await open(temporaryPath, 'wx', mode ?? 0o666);
       await handle.writeFile(content, 'utf8');
-      await handle.sync();
+      if (mode !== undefined) await this.applyTemporaryFileMode(temporaryPath, mode);
+      if (this.durability !== FILESYSTEM_DURABILITY_LEVELS.NONE) {
+        await this.synchronizeTemporaryFile(handle);
+      }
       await handle.close();
       handle = undefined;
-      if (mode !== undefined) await chmod(temporaryPath, mode);
+      if (this.durability === FILESYSTEM_DURABILITY_LEVELS.FILE_AND_PARENT_DIRECTORY) {
+        parentSync = await this.openParentBeforeRename(parent, path);
+      }
       await this.beforeDestinationRevalidation(path);
       const currentObservation = await this.observeDestination(path);
       if (!sameObservation(observation, currentObservation)) throw concurrentDestinationError(path);
-      // Best-effort only: the destination can still change after this check and before rename.
+      if (parentSync !== undefined) {
+        await this.verifyPinnedParent(parentSync, parent, path, false);
+      }
+      // Best-effort only: the destination or parent can still change during rename.
       await this.replaceTemporaryFile(temporaryPath, path);
+      if (parentSync !== undefined) {
+        await this.verifyPinnedParent(parentSync, parent, path, true);
+        await this.synchronizeParentAfterRename(parentSync, parent, path);
+      }
     } finally {
       await handle?.close().catch(() => undefined);
+      await parentSync?.handle.close().catch(() => undefined);
       await rm(temporaryPath, { force: true }).catch(() => undefined);
     }
   }

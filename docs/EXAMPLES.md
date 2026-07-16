@@ -30,10 +30,18 @@ Catch the error, parse it with `parseStaleAnchorError`, and retry using the exac
 ## Use the filesystem adapter
 
 ```ts
-import { FilesystemPiClient } from 'pi-anchor-edit-core';
+import { FILESYSTEM_DURABILITY_LEVELS, FilesystemPiClient } from 'pi-anchor-edit-core';
 
+// Existing behavior: temporary-file fsync, then atomic rename.
 const client = new FilesystemPiClient();
+
+// Require an explicit error if opening or syncing the parent is unsupported.
+const strictDurabilityClient = new FilesystemPiClient({
+  durability: FILESYSTEM_DURABILITY_LEVELS.FILE_AND_PARENT_DIRECTORY,
+  unsupportedDirectorySync: 'strict',
+});
+
 const rendered = await client.read({ path: 'src/file.ts' });
 ```
 
-The adapter rejects unsupported binary edits and preserves detected newline style.
+The adapter rejects unsupported binary edits and preserves detected newline style. If `FilesystemDurabilityError` is thrown, inspect `destinationVisible`: `false` preserves the original before rename; `true` means the pinned parent failed to sync after rename, so re-read rather than blindly retry.

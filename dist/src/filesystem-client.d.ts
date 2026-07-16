@@ -22,8 +22,8 @@ export declare class FilesystemDurabilityError extends Error {
     readonly code: FilesystemDurabilityErrorCode;
     readonly destinationPath: string;
     readonly durability: FilesystemDurability;
-    readonly destinationVisible = true;
-    constructor(code: FilesystemDurabilityErrorCode, destinationPath: string, durability: FilesystemDurability, cause: unknown);
+    readonly destinationVisible: boolean;
+    constructor(code: FilesystemDurabilityErrorCode, destinationPath: string, durability: FilesystemDurability, destinationVisible: boolean, cause: unknown);
 }
 export declare class FilesystemPiClient implements PiClient {
     private readonly durability;
@@ -33,7 +33,10 @@ export declare class FilesystemPiClient implements PiClient {
     protected applyTemporaryFileMode(temporaryPath: string, mode: number): Promise<void>;
     protected synchronizeTemporaryFile(handle: FileHandle): Promise<void>;
     protected replaceTemporaryFile(temporaryPath: string, destinationPath: string): Promise<void>;
-    protected synchronizeParentDirectory(parentPath: string): Promise<void>;
+    protected openParentDirectoryForSync(parentPath: string): Promise<FileHandle>;
+    protected synchronizeParentDirectory(handle: FileHandle, _parentPath: string): Promise<void>;
+    private handleDirectorySyncFailure;
+    private openParentBeforeRename;
     private synchronizeParentAfterRename;
     private observeDestination;
     private atomicWrite;

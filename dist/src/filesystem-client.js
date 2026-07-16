@@ -20,15 +20,22 @@ export class FilesystemDurabilityError extends Error {
     code;
     destinationPath;
     durability;
-    destinationVisible = true;
-    constructor(code, destinationPath, durability, cause) {
+    destinationVisible;
+    constructor(code, destinationPath, durability, destinationVisible, cause) {
         const detail = code === 'E_DIRECTORY_SYNC_UNSUPPORTED'
             ? 'parent-directory synchronization is unsupported'
             : 'parent-directory synchronization failed';
-        super(`[${code}] ${destinationPath} was replaced and is visible, but ${detail}; crash durability is not confirmed. Re-read before retrying.`, { cause });
+        const boundary = destinationVisible
+            ? `${destinationPath} was replaced and is visible`
+            : `${destinationPath} was not replaced`;
+        const recovery = destinationVisible
+            ? 'Crash durability is not confirmed. Re-read before retrying.'
+            : 'The original destination is unchanged.';
+        super(`[${code}] ${boundary}, but ${detail}. ${recovery}`, { cause });
         this.code = code;
         this.destinationPath = destinationPath;
         this.durability = durability;
+        this.destinationVisible = destinationVisible;
         this.name = 'FilesystemDurabilityError';
     }
 }
@@ -181,25 +188,34 @@ export class FilesystemPiClient {
     async replaceTemporaryFile(temporaryPath, destinationPath) {
         await rename(temporaryPath, destinationPath);
     }
-    async synchronizeParentDirectory(parentPath) {
-        const handle = await open(parentPath, 'r');
-        try {
-            await handle.sync();
-        }
-        finally {
-            await handle.close().catch(() => undefined);
-        }
+    async openParentDirectoryForSync(parentPath) {
+        return open(parentPath, 'r');
     }
-    async synchronizeParentAfterRename(parentPath, destinationPath) {
+    async synchronizeParentDirectory(handle, _parentPath) {
+        await handle.sync();
+    }
+    handleDirectorySyncFailure(error, destinationPath, destinationVisible) {
+        const unsupported = isUnsupportedDirectorySyncError(error);
+        if (unsupported && this.unsupportedDirectorySync === UNSUPPORTED_DIRECTORY_SYNC_BEHAVIORS.DEGRADE) {
+            return;
+        }
+        throw new FilesystemDurabilityError(unsupported ? 'E_DIRECTORY_SYNC_UNSUPPORTED' : 'E_DURABILITY_UNCONFIRMED', destinationPath, this.durability, destinationVisible, error);
+    }
+    async openParentBeforeRename(parentPath, destinationPath) {
         try {
-            await this.synchronizeParentDirectory(parentPath);
+            return await this.openParentDirectoryForSync(parentPath);
         }
         catch (error) {
-            const unsupported = isUnsupportedDirectorySyncError(error);
-            if (unsupported && this.unsupportedDirectorySync === UNSUPPORTED_DIRECTORY_SYNC_BEHAVIORS.DEGRADE) {
-                return;
-            }
-            throw new FilesystemDurabilityError(unsupported ? 'E_DIRECTORY_SYNC_UNSUPPORTED' : 'E_DURABILITY_UNCONFIRMED', destinationPath, this.durability, error);
+            this.handleDirectorySyncFailure(error, destinationPath, false);
+            return undefined;
+        }
+    }
+    async synchronizeParentAfterRename(handle, parentPath, destinationPath) {
+        try {
+            await this.synchronizeParentDirectory(handle, parentPath);
+        }
+        catch (error) {
+            this.handleDirectorySyncFailure(error, destinationPath, true);
         }
     }
     async observeDestination(path) {
@@ -254,6 +270,7 @@ export class FilesystemPiClient {
         await mkdir(parent, { recursive: true });
         const temporaryPath = join(parent, `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
         let handle;
+        let parentHandle;
         try {
             handle = await open(temporaryPath, 'wx', mode ?? 0o666);
             await handle.writeFile(content, 'utf8');
@@ -264,18 +281,22 @@ export class FilesystemPiClient {
             }
             await handle.close();
             handle = undefined;
+            if (this.durability === FILESYSTEM_DURABILITY_LEVELS.FILE_AND_PARENT_DIRECTORY) {
+                parentHandle = await this.openParentBeforeRename(parent, path);
+            }
             await this.beforeDestinationRevalidation(path);
             const currentObservation = await this.observeDestination(path);
             if (!sameObservation(observation, currentObservation))
                 throw concurrentDestinationError(path);
             // Best-effort only: the destination can still change after this check and before rename.
             await this.replaceTemporaryFile(temporaryPath, path);
-            if (this.durability === FILESYSTEM_DURABILITY_LEVELS.FILE_AND_PARENT_DIRECTORY) {
-                await this.synchronizeParentAfterRename(parent, path);
+            if (parentHandle !== undefined) {
+                await this.synchronizeParentAfterRename(parentHandle, parent, path);
             }
         }
         finally {
             await handle?.close().catch(() => undefined);
+            await parentHandle?.close().catch(() => undefined);
             await rm(temporaryPath, { force: true }).catch(() => undefined);
         }
     }

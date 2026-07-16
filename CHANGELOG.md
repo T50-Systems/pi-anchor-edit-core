@@ -21,7 +21,7 @@
 - package contents exclude compiled tests and include complete repository provenance metadata.
 - filesystem atomic replacement now performs best-effort optimistic destination revalidation with identity, permission-mode, and SHA-256 byte-digest evidence, returning `[E_CONCURRENT_DESTINATION]` while preserving detected concurrent state and cleaning temporary files.
 - callers can select `none`, `file`, or `file-and-parent-directory` durability through `FilesystemPiClient`; the default remains file sync.
-- preserved destination mode is now applied before the final temporary-file sync, and parent-directory sync capability is detected from the actual filesystem operation.
+- preserved destination mode is now applied before the final temporary-file sync, and parent-directory capability is detected from the actual filesystem operation using a pre-rename pinned handle.
 
 ### Security
 

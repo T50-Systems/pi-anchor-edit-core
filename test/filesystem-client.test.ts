@@ -71,6 +71,12 @@ class OperationRecordingClient extends FilesystemPiClient {
     await super.synchronizeTemporaryFile(handle);
   }
 
+  protected override async openParentDirectoryForSync(parentPath: string): Promise<FileHandle> {
+    this.operations.push('parent-open');
+    this.synchronizedParents.push(parentPath);
+    return super.openParentDirectoryForSync(parentPath);
+  }
+
   protected override async replaceTemporaryFile(
     temporaryPath: string,
     destinationPath: string,
@@ -79,9 +85,11 @@ class OperationRecordingClient extends FilesystemPiClient {
     await super.replaceTemporaryFile(temporaryPath, destinationPath);
   }
 
-  protected override async synchronizeParentDirectory(parentPath: string): Promise<void> {
+  protected override async synchronizeParentDirectory(
+    _handle: FileHandle,
+    _parentPath: string,
+  ): Promise<void> {
     this.operations.push('parent-sync');
-    this.synchronizedParents.push(parentPath);
   }
 }
 
@@ -102,6 +110,15 @@ class FailingDirectorySyncClient extends FilesystemPiClient {
     const error = new Error(`simulated directory sync failure: ${this.failureCode}`) as NodeJS.ErrnoException;
     error.code = this.failureCode;
     error.syscall = 'fsync';
+    throw error;
+  }
+}
+
+class FailingDirectoryOpenClient extends FilesystemPiClient {
+  protected override async openParentDirectoryForSync(): Promise<FileHandle> {
+    const error = new Error('simulated directory open failure') as NodeJS.ErrnoException;
+    error.code = 'EISDIR';
+    error.syscall = 'open';
     throw error;
   }
 }
@@ -209,7 +226,7 @@ test('supports no-sync, file, and file-and-parent-directory operation sequences'
     },
     {
       durability: FILESYSTEM_DURABILITY_LEVELS.FILE_AND_PARENT_DIRECTORY,
-      expected: ['mode', 'file-sync', 'rename', 'parent-sync'],
+      expected: ['mode', 'file-sync', 'parent-open', 'rename', 'parent-sync'],
     },
   ] as const;
 
@@ -235,7 +252,7 @@ test('syncs only the direct parent when recursive directory creation was needed'
 
   await client.edit({ path, edits: [{ op: 'prepend', lines: ['created'] }] });
 
-  assert.deepEqual(client.operations, ['file-sync', 'rename', 'parent-sync']);
+  assert.deepEqual(client.operations, ['file-sync', 'parent-open', 'rename', 'parent-sync']);
   assert.deepEqual(client.synchronizedParents, [join(dir, 'one', 'two')]);
   assert.equal(await readFile(path, 'utf8'), 'created');
   await assertNoTemporaryFiles(join(dir, 'one', 'two'));
@@ -281,6 +298,33 @@ test('strict unsupported parent sync reports that the renamed destination is vis
   );
 
   assert.equal(await readFile(path, 'utf8'), 'one\npatched');
+  await assertNoTemporaryFiles(dir);
+});
+
+test('strict unsupported parent open fails before rename and cleans the temporary file', async () => {
+  const { dir, path } = await fixture();
+  await writeFile(path, 'one\ntwo');
+  const client = new FailingDirectoryOpenClient({
+    durability: FILESYSTEM_DURABILITY_LEVELS.FILE_AND_PARENT_DIRECTORY,
+    unsupportedDirectorySync: 'strict',
+  });
+  const preview = await client.read({ path });
+
+  await assert.rejects(
+    () => client.edit({
+      path,
+      edits: [{ op: 'replace', pos: secondAnchor(preview), lines: ['patched'] }],
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof FilesystemDurabilityError);
+      assert.equal(error.code, 'E_DIRECTORY_SYNC_UNSUPPORTED');
+      assert.equal(error.destinationVisible, false);
+      assert.match(error.message, /was not replaced/);
+      return true;
+    },
+  );
+
+  assert.equal(await readFile(path, 'utf8'), 'one\ntwo');
   await assertNoTemporaryFiles(dir);
 });
 

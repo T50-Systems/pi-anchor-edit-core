@@ -41,21 +41,23 @@ export type FilesystemDurabilityErrorCode =
   | 'E_DURABILITY_UNCONFIRMED';
 
 export class FilesystemDurabilityError extends Error {
-  readonly destinationVisible = true;
-
   constructor(
     readonly code: FilesystemDurabilityErrorCode,
     readonly destinationPath: string,
     readonly durability: FilesystemDurability,
+    readonly destinationVisible: boolean,
     cause: unknown,
   ) {
     const detail = code === 'E_DIRECTORY_SYNC_UNSUPPORTED'
       ? 'parent-directory synchronization is unsupported'
       : 'parent-directory synchronization failed';
-    super(
-      `[${code}] ${destinationPath} was replaced and is visible, but ${detail}; crash durability is not confirmed. Re-read before retrying.`,
-      { cause },
-    );
+    const boundary = destinationVisible
+      ? `${destinationPath} was replaced and is visible`
+      : `${destinationPath} was not replaced`;
+    const recovery = destinationVisible
+      ? 'Crash durability is not confirmed. Re-read before retrying.'
+      : 'The original destination is unchanged.';
+    super(`[${code}] ${boundary}, but ${detail}. ${recovery}`, { cause });
     this.name = 'FilesystemDurabilityError';
   }
 }
@@ -240,29 +242,56 @@ export class FilesystemPiClient implements PiClient {
     await rename(temporaryPath, destinationPath);
   }
 
-  protected async synchronizeParentDirectory(parentPath: string): Promise<void> {
-    const handle = await open(parentPath, 'r');
+  protected async openParentDirectoryForSync(parentPath: string): Promise<FileHandle> {
+    return open(parentPath, 'r');
+  }
+
+  protected async synchronizeParentDirectory(
+    handle: FileHandle,
+    _parentPath: string,
+  ): Promise<void> {
+    await handle.sync();
+  }
+
+  private handleDirectorySyncFailure(
+    error: unknown,
+    destinationPath: string,
+    destinationVisible: boolean,
+  ): void {
+    const unsupported = isUnsupportedDirectorySyncError(error);
+    if (unsupported && this.unsupportedDirectorySync === UNSUPPORTED_DIRECTORY_SYNC_BEHAVIORS.DEGRADE) {
+      return;
+    }
+    throw new FilesystemDurabilityError(
+      unsupported ? 'E_DIRECTORY_SYNC_UNSUPPORTED' : 'E_DURABILITY_UNCONFIRMED',
+      destinationPath,
+      this.durability,
+      destinationVisible,
+      error,
+    );
+  }
+
+  private async openParentBeforeRename(
+    parentPath: string,
+    destinationPath: string,
+  ): Promise<FileHandle | undefined> {
     try {
-      await handle.sync();
-    } finally {
-      await handle.close().catch(() => undefined);
+      return await this.openParentDirectoryForSync(parentPath);
+    } catch (error) {
+      this.handleDirectorySyncFailure(error, destinationPath, false);
+      return undefined;
     }
   }
 
-  private async synchronizeParentAfterRename(parentPath: string, destinationPath: string): Promise<void> {
+  private async synchronizeParentAfterRename(
+    handle: FileHandle,
+    parentPath: string,
+    destinationPath: string,
+  ): Promise<void> {
     try {
-      await this.synchronizeParentDirectory(parentPath);
+      await this.synchronizeParentDirectory(handle, parentPath);
     } catch (error) {
-      const unsupported = isUnsupportedDirectorySyncError(error);
-      if (unsupported && this.unsupportedDirectorySync === UNSUPPORTED_DIRECTORY_SYNC_BEHAVIORS.DEGRADE) {
-        return;
-      }
-      throw new FilesystemDurabilityError(
-        unsupported ? 'E_DIRECTORY_SYNC_UNSUPPORTED' : 'E_DURABILITY_UNCONFIRMED',
-        destinationPath,
-        this.durability,
-        error,
-      );
+      this.handleDirectorySyncFailure(error, destinationPath, true);
     }
   }
 
@@ -324,6 +353,7 @@ export class FilesystemPiClient implements PiClient {
     await mkdir(parent, { recursive: true });
     const temporaryPath = join(parent, `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
     let handle: FileHandle | undefined;
+    let parentHandle: FileHandle | undefined;
 
     try {
       handle = await open(temporaryPath, 'wx', mode ?? 0o666);
@@ -334,16 +364,20 @@ export class FilesystemPiClient implements PiClient {
       }
       await handle.close();
       handle = undefined;
+      if (this.durability === FILESYSTEM_DURABILITY_LEVELS.FILE_AND_PARENT_DIRECTORY) {
+        parentHandle = await this.openParentBeforeRename(parent, path);
+      }
       await this.beforeDestinationRevalidation(path);
       const currentObservation = await this.observeDestination(path);
       if (!sameObservation(observation, currentObservation)) throw concurrentDestinationError(path);
       // Best-effort only: the destination can still change after this check and before rename.
       await this.replaceTemporaryFile(temporaryPath, path);
-      if (this.durability === FILESYSTEM_DURABILITY_LEVELS.FILE_AND_PARENT_DIRECTORY) {
-        await this.synchronizeParentAfterRename(parent, path);
+      if (parentHandle !== undefined) {
+        await this.synchronizeParentAfterRename(parentHandle, parent, path);
       }
     } finally {
       await handle?.close().catch(() => undefined);
+      await parentHandle?.close().catch(() => undefined);
       await rm(temporaryPath, { force: true }).catch(() => undefined);
     }
   }

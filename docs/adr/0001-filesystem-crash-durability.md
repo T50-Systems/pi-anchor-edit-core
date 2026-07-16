@@ -36,17 +36,20 @@ The write sequence is:
 2. apply the preserved destination mode to the temporary file, when one exists;
 3. perform the selected final temporary-file sync (`file` and `file-and-parent-directory` only);
 4. close the temporary-file handle;
-5. revalidate the destination and atomically rename;
-6. for `file-and-parent-directory`, sync the destination's direct parent directory.
+5. for `file-and-parent-directory`, open and retain a handle to the destination's direct parent;
+6. revalidate the destination and atomically rename;
+7. for `file-and-parent-directory`, sync the retained parent handle and close it.
 
 Applying mode before the final file sync includes the mode metadata in the best available file durability boundary.
 
+Opening the parent before rename pins the directory that receives the replacement. Reopening the parent path afterward could synchronize a different directory if another process renamed or replaced that path.
+
 ### Unsupported parent-directory synchronization
 
-Capability is detected from the actual open/sync operation on the destination's parent rather than from an operating-system allowlist. Known unsupported-operation error codes are classified explicitly. Windows `EPERM` from directory sync is also classified as unsupported; permission errors not identified as an unsupported capability remain real failures.
+Capability is detected from the actual open/sync operation on the destination's parent rather than from an operating-system allowlist. Known unsupported-operation error codes are classified explicitly. Windows `EPERM` from the `fsync` syscall is also classified as unsupported; permission errors from opening the directory remain real failures.
 
-- `degrade`: a classified unsupported directory-sync result completes successfully at file durability. The caller chose best-effort parent-directory durability and must not interpret success as confirmation that the rename survived a crash on that filesystem.
-- `strict`: the same classified result throws an explicit durability error.
+- `degrade`: a classified unsupported directory open or sync result completes successfully at file durability. The caller chose best-effort parent-directory durability and must not interpret success as confirmation that the rename survived a crash on that filesystem.
+- `strict`: the same classified result throws an explicit durability error. If opening the parent failed, this occurs before rename with `destinationVisible: false`; if sync failed, it occurs after rename with `destinationVisible: true`.
 - Any unclassified directory open/sync failure throws regardless of policy.
 
 No parent-directory capability result is cached globally because different paths can reside on filesystems with different behavior.
@@ -54,6 +57,8 @@ No parent-directory capability result is cached globally because different paths
 ### Post-rename failures
 
 Parent-directory sync occurs after rename, so any failure from that step happens after the destination has been committed and is visible. The operation throws a `FilesystemDurabilityError` with `destinationVisible: true`; it does not roll back, delete, or restore the visible destination. Retrying the original edit blindly is unsafe. Callers must inspect/re-read the destination and decide whether another durability attempt or edit is appropriate.
+
+The retained handle prevents a path replacement between rename and sync from redirecting synchronization to a different directory.
 
 In `degrade` mode, only a classified unsupported-capability result is absorbed. Other post-rename failures still throw `FilesystemDurabilityError` and carry the original error as `cause`.
 
@@ -72,12 +77,12 @@ Protected filesystem-operation seams remain available for deterministic ordering
 - Existing callers retain file-sync behavior.
 - Callers can choose lower latency or stronger rename durability explicitly.
 - Unsupported filesystems and Windows have deterministic degrade/strict behavior.
-- Post-commit errors cannot be mistaken for pre-commit failures.
+- Pre-commit and post-commit durability errors are distinguished by `destinationVisible`.
 - Mode preservation is ordered before the final file sync.
 
 ### Negative
 
-- `file-and-parent-directory` adds a directory open and sync after every successful rename.
+- `file-and-parent-directory` adds a directory open before rename and a sync afterward.
 - `degrade` success cannot prove parent-directory durability; strict mode is required when lack of that capability must be surfaced.
 - Newly created directory hierarchies remain outside the guarantee.
 - Filesystem and storage hardware may still weaken or ignore sync semantics beyond what Node.js can observe.

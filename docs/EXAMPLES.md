@@ -35,7 +35,7 @@ import { FILESYSTEM_DURABILITY_LEVELS, FilesystemPiClient } from 'pi-anchor-edit
 // Existing behavior: temporary-file fsync, then atomic rename.
 const client = new FilesystemPiClient();
 
-// Require an explicit error if the post-rename parent-directory sync is unsupported.
+// Require an explicit error if opening or syncing the parent is unsupported.
 const strictDurabilityClient = new FilesystemPiClient({
   durability: FILESYSTEM_DURABILITY_LEVELS.FILE_AND_PARENT_DIRECTORY,
   unsupportedDirectorySync: 'strict',
@@ -44,4 +44,4 @@ const strictDurabilityClient = new FilesystemPiClient({
 const rendered = await client.read({ path: 'src/file.ts' });
 ```
 
-The adapter rejects unsupported binary edits and preserves detected newline style. If `FilesystemDurabilityError` is thrown, inspect `destinationVisible`: parent sync runs after rename, so the destination must be re-read rather than blindly retried.
+The adapter rejects unsupported binary edits and preserves detected newline style. If `FilesystemDurabilityError` is thrown, inspect `destinationVisible`: `false` preserves the original before rename; `true` means the pinned parent failed to sync after rename, so re-read rather than blindly retry.

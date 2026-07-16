@@ -113,7 +113,7 @@ This is best-effort optimistic detection, not compare-and-swap. A residual race 
 
 ### `[E_DIRECTORY_SYNC_UNSUPPORTED]` / `[E_DURABILITY_UNCONFIRMED]`
 
-These `FilesystemDurabilityError` failures occur after rename. The edited destination is already visible (`destinationVisible === true`), but requested parent-directory crash durability was not confirmed. Do not blindly replay the edit or attempt to restore the old file. Re-read the destination before deciding how to recover. A classified unsupported operation is absorbed only when `unsupportedDirectorySync: 'degrade'`; other sync failures always throw.
+`FilesystemDurabilityError` distinguishes the commit boundary. If opening the parent fails before rename, `destinationVisible === false` and the original destination remains unchanged. If syncing the pinned parent handle fails after rename, `destinationVisible === true`; the edited destination is already visible but crash durability was not confirmed. Do not blindly replay or roll back a visible edit—re-read first. A classified unsupported operation is absorbed only when `unsupportedDirectorySync: 'degrade'`; other failures always throw.
 
 ## Development
 

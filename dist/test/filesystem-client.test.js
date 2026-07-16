@@ -3,7 +3,7 @@ import test from 'node:test';
 import { chmod, link, lstat, mkdtemp, readFile, readdir, rename, rm, stat, symlink, utimes, writeFile, } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { FilesystemPiClient, loadFileKindAndText } from '../src/index.js';
+import { DEFAULT_FILESYSTEM_DURABILITY, FILESYSTEM_DURABILITY_LEVELS, FilesystemDurabilityError, FilesystemPiClient, loadFileKindAndText, } from '../src/index.js';
 async function fixture(name = 'file.txt') {
     const dir = await mkdtemp(join(tmpdir(), 'pi-anchor-edit-core-'));
     return { dir, path: join(dir, name) };
@@ -26,6 +26,49 @@ class RevalidationRaceClient extends FilesystemPiClient {
     }
     async beforeDestinationRevalidation(destinationPath) {
         await this.race(destinationPath);
+    }
+}
+class OperationRecordingClient extends FilesystemPiClient {
+    operations = [];
+    synchronizedParents = [];
+    constructor(config = {}) {
+        super(config);
+    }
+    async applyTemporaryFileMode(temporaryPath, mode) {
+        this.operations.push('mode');
+        await super.applyTemporaryFileMode(temporaryPath, mode);
+    }
+    async synchronizeTemporaryFile(handle) {
+        this.operations.push('file-sync');
+        await super.synchronizeTemporaryFile(handle);
+    }
+    async replaceTemporaryFile(temporaryPath, destinationPath) {
+        this.operations.push('rename');
+        await super.replaceTemporaryFile(temporaryPath, destinationPath);
+    }
+    async synchronizeParentDirectory(parentPath) {
+        this.operations.push('parent-sync');
+        this.synchronizedParents.push(parentPath);
+    }
+}
+class FailingFileSyncClient extends FilesystemPiClient {
+    async synchronizeTemporaryFile() {
+        const error = new Error('simulated file sync failure');
+        error.code = 'EIO';
+        throw error;
+    }
+}
+class FailingDirectorySyncClient extends FilesystemPiClient {
+    failureCode;
+    constructor(config, failureCode) {
+        super(config);
+        this.failureCode = failureCode;
+    }
+    async synchronizeParentDirectory() {
+        const error = new Error(`simulated directory sync failure: ${this.failureCode}`);
+        error.code = this.failureCode;
+        error.syscall = 'fsync';
+        throw error;
     }
 }
 function expectedConcurrentDestinationError(path) {
@@ -86,6 +129,160 @@ test('preserves CRLF, UTF-8 BOM, and an existing permission mode', async (t) => 
     else {
         t.diagnostic('permission-bit assertion unavailable on Windows; CRLF/BOM assertions still ran');
     }
+});
+test('exports durability levels and preserves file sync as the default', async () => {
+    assert.deepEqual(FILESYSTEM_DURABILITY_LEVELS, {
+        NONE: 'none',
+        FILE: 'file',
+        FILE_AND_PARENT_DIRECTORY: 'file-and-parent-directory',
+    });
+    assert.equal(DEFAULT_FILESYSTEM_DURABILITY, FILESYSTEM_DURABILITY_LEVELS.FILE);
+    const { path } = await fixture();
+    await writeFile(path, 'one\ntwo');
+    const client = new OperationRecordingClient();
+    const preview = await client.read({ path });
+    await client.edit({ path, edits: [{ op: 'replace', pos: secondAnchor(preview), lines: ['patched'] }] });
+    assert.deepEqual(client.operations, ['mode', 'file-sync', 'rename']);
+    assert.equal(await readFile(path, 'utf8'), 'one\npatched');
+});
+test('supports no-sync, file, and file-and-parent-directory operation sequences', async () => {
+    const cases = [
+        {
+            durability: FILESYSTEM_DURABILITY_LEVELS.NONE,
+            expected: ['mode', 'rename'],
+        },
+        {
+            durability: FILESYSTEM_DURABILITY_LEVELS.FILE,
+            expected: ['mode', 'file-sync', 'rename'],
+        },
+        {
+            durability: FILESYSTEM_DURABILITY_LEVELS.FILE_AND_PARENT_DIRECTORY,
+            expected: ['mode', 'file-sync', 'rename', 'parent-sync'],
+        },
+    ];
+    for (const { durability, expected } of cases) {
+        const { path } = await fixture(`${durability}.txt`);
+        await writeFile(path, 'one\ntwo');
+        const client = new OperationRecordingClient({ durability });
+        const preview = await client.read({ path });
+        await client.edit({
+            path,
+            edits: [{ op: 'replace', pos: secondAnchor(preview), lines: ['patched'] }],
+        });
+        assert.deepEqual(client.operations, expected, durability);
+        assert.equal(await readFile(path, 'utf8'), 'one\npatched');
+    }
+});
+test('syncs only the direct parent when recursive directory creation was needed', async () => {
+    const { dir, path } = await fixture('one/two/new.txt');
+    const client = new OperationRecordingClient({
+        durability: FILESYSTEM_DURABILITY_LEVELS.FILE_AND_PARENT_DIRECTORY,
+    });
+    await client.edit({ path, edits: [{ op: 'prepend', lines: ['created'] }] });
+    assert.deepEqual(client.operations, ['file-sync', 'rename', 'parent-sync']);
+    assert.deepEqual(client.synchronizedParents, [join(dir, 'one', 'two')]);
+    assert.equal(await readFile(path, 'utf8'), 'created');
+    await assertNoTemporaryFiles(join(dir, 'one', 'two'));
+});
+test('default policy degrades a classified unsupported parent sync to file durability', async () => {
+    const { dir, path } = await fixture();
+    await writeFile(path, 'one\ntwo');
+    const client = new FailingDirectorySyncClient({
+        durability: FILESYSTEM_DURABILITY_LEVELS.FILE_AND_PARENT_DIRECTORY,
+    }, 'EINVAL');
+    const preview = await client.read({ path });
+    await client.edit({ path, edits: [{ op: 'replace', pos: secondAnchor(preview), lines: ['patched'] }] });
+    assert.equal(await readFile(path, 'utf8'), 'one\npatched');
+    await assertNoTemporaryFiles(dir);
+});
+test('strict unsupported parent sync reports that the renamed destination is visible', async () => {
+    const { dir, path } = await fixture();
+    await writeFile(path, 'one\ntwo');
+    const client = new FailingDirectorySyncClient({
+        durability: FILESYSTEM_DURABILITY_LEVELS.FILE_AND_PARENT_DIRECTORY,
+        unsupportedDirectorySync: 'strict',
+    }, 'ENOTSUP');
+    const preview = await client.read({ path });
+    await assert.rejects(() => client.edit({
+        path,
+        edits: [{ op: 'replace', pos: secondAnchor(preview), lines: ['patched'] }],
+    }), (error) => {
+        assert.ok(error instanceof FilesystemDurabilityError);
+        assert.equal(error.code, 'E_DIRECTORY_SYNC_UNSUPPORTED');
+        assert.equal(error.destinationVisible, true);
+        assert.equal(error.destinationPath, path);
+        assert.equal(error.durability, FILESYSTEM_DURABILITY_LEVELS.FILE_AND_PARENT_DIRECTORY);
+        assert.equal(error.cause.code, 'ENOTSUP');
+        return true;
+    });
+    assert.equal(await readFile(path, 'utf8'), 'one\npatched');
+    await assertNoTemporaryFiles(dir);
+});
+test('unclassified post-rename sync failure reports visible but unconfirmed durability', async () => {
+    const { dir, path } = await fixture();
+    await writeFile(path, 'one\ntwo');
+    const client = new FailingDirectorySyncClient({
+        durability: FILESYSTEM_DURABILITY_LEVELS.FILE_AND_PARENT_DIRECTORY,
+        unsupportedDirectorySync: 'degrade',
+    }, 'EIO');
+    const preview = await client.read({ path });
+    await assert.rejects(() => client.edit({
+        path,
+        edits: [{ op: 'replace', pos: secondAnchor(preview), lines: ['patched'] }],
+    }), (error) => {
+        assert.ok(error instanceof FilesystemDurabilityError);
+        assert.equal(error.code, 'E_DURABILITY_UNCONFIRMED');
+        assert.equal(error.destinationVisible, true);
+        assert.match(error.message, /was replaced and is visible/);
+        return true;
+    });
+    assert.equal(await readFile(path, 'utf8'), 'one\npatched');
+    await assertNoTemporaryFiles(dir);
+});
+test('pre-rename file sync failure preserves the original and cleans the temporary file', async () => {
+    const { dir, path } = await fixture();
+    await writeFile(path, 'one\ntwo');
+    const client = new FailingFileSyncClient();
+    const preview = await client.read({ path });
+    await assert.rejects(() => client.edit({
+        path,
+        edits: [{ op: 'replace', pos: secondAnchor(preview), lines: ['patched'] }],
+    }), /simulated file sync failure/);
+    assert.equal(await readFile(path, 'utf8'), 'one\ntwo');
+    await assertNoTemporaryFiles(dir);
+});
+test('real directory sync capability has explicit hosted-platform behavior', async (t) => {
+    const { dir, path } = await fixture();
+    await writeFile(path, 'one\ntwo');
+    const client = new FilesystemPiClient({
+        durability: FILESYSTEM_DURABILITY_LEVELS.FILE_AND_PARENT_DIRECTORY,
+        unsupportedDirectorySync: 'strict',
+    });
+    const preview = await client.read({ path });
+    const edit = () => client.edit({
+        path,
+        edits: [{ op: 'replace', pos: secondAnchor(preview), lines: ['patched'] }],
+    });
+    if (process.platform === 'win32') {
+        await assert.rejects(edit, (error) => {
+            assert.ok(error instanceof FilesystemDurabilityError);
+            assert.equal(error.code, 'E_DIRECTORY_SYNC_UNSUPPORTED');
+            assert.equal(error.cause.code, 'EPERM');
+            return true;
+        });
+        t.diagnostic('Windows directory fsync reported EPERM and strict mode surfaced it');
+    }
+    else {
+        await edit();
+    }
+    assert.equal(await readFile(path, 'utf8'), 'one\npatched');
+    await assertNoTemporaryFiles(dir);
+});
+test('rejects invalid runtime durability configuration', () => {
+    assert.throws(() => new FilesystemPiClient({ durability: 'invalid' }), /Unsupported filesystem durability level/);
+    assert.throws(() => new FilesystemPiClient({
+        unsupportedDirectorySync: 'invalid',
+    }), /Unsupported directory-sync behavior/);
 });
 test('replacement failure leaves the original intact and removes the temporary file', async () => {
     const client = new FailingReplacementClient();

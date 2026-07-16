@@ -23,6 +23,8 @@ We aim to acknowledge a private report within 3 business days, provide an initia
 
 Anchor diagnostics can quote nearby file content in `>>> LINE#HASH:content` retry lines. Treat all diagnostics as potentially sensitive. Redact or replace them with synthetic examples before sharing, and never send raw diagnostics to telemetry by default.
 
+Filesystem sync is a durability control, not an authorization or confidentiality boundary. `none` intentionally omits explicit syncs; the default `file` level does not make the directory rename crash-durable; and `file-and-parent-directory` depends on operating-system, filesystem, mount, virtualization, and hardware behavior. A degraded unsupported directory sync confirms only file durability. Strict post-rename failures leave the new destination visible and must not trigger blind replay or rollback.
+
 See [`docs/OPERATIONS.md`](docs/OPERATIONS.md) for safe recovery actions and [`docs/RELEASING.md`](docs/RELEASING.md) for immutable release recovery.
 
 ## Dependency and scanning maintenance

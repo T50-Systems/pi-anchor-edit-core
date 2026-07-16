@@ -16,6 +16,7 @@ Provide one dependable cross-platform edit core where every edit applies to the 
 - File-kind and text-loading helpers for text/binary/empty-file handling.
 - Text and newline normalization used by cross-platform edit tools.
 - A local filesystem Pi-style client for tests and retry-oriented tooling.
+- Selectable filesystem crash-durability levels with the existing file-sync behavior retained by default.
 - TypeScript declarations and ESM output under `dist/`.
 
 ## Quickstart
@@ -43,6 +44,23 @@ import {
 const client = new FilesystemPiClient();
 const rendered = await client.read({ path: 'src/file.ts' });
 ```
+
+Choose durability explicitly only when the default file sync is not the desired trade-off:
+
+```ts
+import { FILESYSTEM_DURABILITY_LEVELS, FilesystemPiClient } from 'pi-anchor-edit-core';
+
+const fastest = new FilesystemPiClient({
+  durability: FILESYSTEM_DURABILITY_LEVELS.NONE,
+});
+
+const renameDurable = new FilesystemPiClient({
+  durability: FILESYSTEM_DURABILITY_LEVELS.FILE_AND_PARENT_DIRECTORY,
+  unsupportedDirectorySync: 'strict',
+});
+```
+
+The levels are `none`, `file`, and `file-and-parent-directory`; `DEFAULT_FILESYSTEM_DURABILITY` is `file`. Parent-directory sync support is detected from the real operation. Use `strict` when unsupported capability must throw; the default `degrade` policy completes at file durability when the operation is known to be unsupported.
 
 Copy anchors verbatim from `rendered`; they are opaque observations.
 
@@ -93,6 +111,10 @@ The destination changed after the filesystem adapter loaded it and before atomic
 
 This is best-effort optimistic detection, not compare-and-swap. A residual race remains between the final revalidation and `rename`, so a successful edit is not a guarantee that no concurrent writer intervened.
 
+### `[E_DIRECTORY_SYNC_UNSUPPORTED]` / `[E_DURABILITY_UNCONFIRMED]`
+
+These `FilesystemDurabilityError` failures occur after rename. The edited destination is already visible (`destinationVisible === true`), but requested parent-directory crash durability was not confirmed. Do not blindly replay the edit or attempt to restore the old file. Re-read the destination before deciding how to recover. A classified unsupported operation is absorbed only when `unsupportedDirectorySync: 'degrade'`; other sync failures always throw.
+
 ## Development
 
 ```bash
@@ -108,15 +130,16 @@ npm run benchmark
 
 ### Supported matrix
 
-CI runs Node.js 22 on Ubuntu, Windows, and macOS, plus the Node.js 24 compatibility job on Ubuntu. Capability-sensitive symlink and permission assertions report a specific diagnostic when the host cannot provide that feature; unrelated filesystem and CRLF assertions continue to run. The thresholded coverage command enforces at least 85% line coverage and 75% branch coverage.
+CI runs Node.js 22 on Ubuntu, Windows, and macOS, plus the Node.js 24 compatibility job on Ubuntu. Capability-sensitive symlink and permission assertions report a specific diagnostic when the host cannot provide that feature; unrelated filesystem and CRLF assertions continue to run. Durability tests assert successful real parent-directory sync on hosted Linux/macOS and Windows `EPERM` degradation/strict classification, in addition to deterministic injected failure fixtures. The thresholded coverage command enforces at least 85% line coverage and 75% branch coverage.
 
 ## Documentation
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — components, control flow, and invariants.
+- [`docs/adr/0001-filesystem-crash-durability.md`](docs/adr/0001-filesystem-crash-durability.md) — durability levels, ordering, capability degradation, and post-rename failure contract.
 - [`docs/BRANCH_PROTECTION.md`](docs/BRANCH_PROTECTION.md) — required review/check policy and read-only verification.
 - [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — classified errors, filesystem recovery, and safe escalation.
 - [`docs/EXAMPLES.md`](docs/EXAMPLES.md) — parsing, editing, recovery, and adapter examples.
-- [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) — reproducible hash baseline.
+- [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) — reproducible hash and filesystem durability benchmarks.
 - [`docs/PRODUCT.md`](docs/PRODUCT.md) — vision and success metrics.
 - [`docs/RELEASING.md`](docs/RELEASING.md) — package verification, immutable tags, release creation, and recovery.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — contributor workflow.

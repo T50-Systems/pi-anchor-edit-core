@@ -1,4 +1,4 @@
-import { chmod, lstat, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
+import { chmod, lstat, mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { basename, dirname, join } from 'node:path';
 import { formatAnchors } from './anchors.js';
@@ -222,7 +222,7 @@ export class FilesystemPiClient {
     async verifyPinnedParent(parentSync, parentPath, destinationPath, destinationVisible) {
         let cause;
         try {
-            const stats = await lstat(parentPath, { bigint: true });
+            const stats = await stat(parentPath, { bigint: true });
             if (stats.isDirectory() && sameIdentity(parentSync, stats))
                 return;
             cause = new Error(`Parent directory changed during replacement: ${parentPath}`);

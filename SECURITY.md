@@ -19,7 +19,7 @@ We aim to acknowledge a private report within 3 business days, provide an initia
 
 ## Trust boundary
 
-`pi-anchor-edit-core` reads and mutates caller-selected local paths. The caller is responsible for authorization, path selection, backups, and preventing untrusted users from choosing sensitive targets. The filesystem adapter rejects symbolic links, special files, directories, images, binary/null-byte content, and invalid UTF-8 rewrites; it does not create a sandbox or establish that a path is safe to edit.
+`pi-anchor-edit-core` reads and mutates caller-selected local paths. The caller is responsible for authorization, path selection, parent-path components, backups, and preventing untrusted users from choosing sensitive targets. The filesystem adapter rejects a symbolic link at the destination, plus special files, directories, images, binary/null-byte content, and invalid UTF-8 rewrites; parent-directory components follow normal OS resolution and may be symlinks. It does not create a sandbox or establish that a path is safe to edit.
 
 Anchor diagnostics can quote nearby file content in `>>> LINE#HASH:content` retry lines. Treat all diagnostics as potentially sensitive. Redact or replace them with synthetic examples before sharing, and never send raw diagnostics to telemetry by default.
 

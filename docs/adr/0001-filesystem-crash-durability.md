@@ -43,7 +43,7 @@ The write sequence is:
 
 Applying mode before the final file sync includes the mode metadata in the best available file durability boundary.
 
-Opening the parent before rename pins a candidate directory, while identity checks immediately before and after rename prevent a replaced parent path from making the operation sync an unrelated directory and falsely report success. Reopening the parent path only afterward would not provide either property.
+Opening the parent before rename pins a candidate directory, while followed-target identity checks immediately before and after rename prevent a replaced or retargeted parent path from making the operation sync an unrelated directory and falsely report success. A symlinked parent is supported when its current target still matches the retained handle. Reopening the parent path only afterward would not provide either property.
 
 ### Unsupported parent-directory synchronization
 

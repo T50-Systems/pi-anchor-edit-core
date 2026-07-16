@@ -385,6 +385,38 @@ test('reports unconfirmed durability when the parent changes during rename', asy
   }
 });
 
+test('file-and-parent-directory follows and verifies a symlinked parent target', async (t) => {
+  const { dir } = await fixture();
+  const realParent = join(dir, 'real-parent');
+  const linkedParent = join(dir, 'linked-parent');
+  const realPath = join(realParent, 'file.txt');
+  const linkedPath = join(linkedParent, 'file.txt');
+  await mkdir(realParent);
+  await writeFile(realPath, 'one\ntwo');
+  try {
+    await symlink(realParent, linkedParent, process.platform === 'win32' ? 'junction' : 'dir');
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'EPERM' || code === 'EACCES' || code === 'ENOSYS') {
+      t.skip(`directory-symlink capability unavailable: ${code}`);
+      return;
+    }
+    throw error;
+  }
+
+  const client = new FilesystemPiClient({
+    durability: FILESYSTEM_DURABILITY_LEVELS.FILE_AND_PARENT_DIRECTORY,
+  });
+  const preview = await client.read({ path: linkedPath });
+  await client.edit({
+    path: linkedPath,
+    edits: [{ op: 'replace', pos: secondAnchor(preview), lines: ['patched'] }],
+  });
+
+  assert.equal(await readFile(realPath, 'utf8'), 'one\npatched');
+  await assertNoTemporaryFiles(realParent);
+});
+
 test('unclassified post-rename sync failure reports visible but unconfirmed durability', async () => {
   const { dir, path } = await fixture();
   await writeFile(path, 'one\ntwo');

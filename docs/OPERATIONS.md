@@ -8,7 +8,7 @@ The filesystem adapter performs same-directory temporary-file replacement. It re
 
 ## Durability selection
 
-`new FilesystemPiClient()` preserves the historical `file` durability default: write, apply preserved mode, sync the temporary file, then rename. Set `durability` to `none` to omit explicit syncs or `file-and-parent-directory` to retain the direct parent before rename, verify its path identity around rename, and sync that handle afterward. The latter does not synchronize recursively created ancestor entries.
+`new FilesystemPiClient()` preserves the historical `file` durability default: write, apply preserved mode, sync the temporary file, then rename. Set `durability` to `none` to omit explicit syncs or `file-and-parent-directory` to retain the direct parent before rename, verify its followed-target identity around rename, and sync that handle afterward. A stable symlinked parent target is supported; retargeting fails unconfirmed. Recursively created ancestor entries are not synchronized.
 
 Parent-directory support is detected by attempting the real operation. `unsupportedDirectorySync: 'degrade'` (default) absorbs only a classified unsupported-capability error and completes at file durability. `strict` throws instead. Unclassified I/O or permission failures always throw. See [`ADR 0001`](adr/0001-filesystem-crash-durability.md).
 

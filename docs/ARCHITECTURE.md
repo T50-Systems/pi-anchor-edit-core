@@ -21,7 +21,7 @@
 6. The filesystem adapter classifies the path before decoding, captures destination existence, file identity, byte length, permission mode, and a SHA-256 digest, and preserves newline/BOM/mode behavior.
 7. The adapter writes a same-directory temporary file, applies preserved mode, and performs the configured file sync unless `none` was selected.
 8. For `file-and-parent-directory`, it opens and retains a handle to the direct parent before replacement. It re-observes the destination and verifies the parent path still has the retained identity before rename.
-9. After rename it verifies parent identity again, then synchronizes the retained handle. A mismatch throws unconfirmed durability instead of syncing an unrelated directory; only classified unsupported capability degrades under policy.
+9. After rename it verifies the followed parent-target identity again, then synchronizes the retained handle. Symlinked parents are accepted while their target stays stable; a mismatch throws unconfirmed durability instead of syncing an unrelated directory.
 
 ## Invariants
 

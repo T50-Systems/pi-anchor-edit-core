@@ -53,7 +53,7 @@
   "devDependencies": {
     "@types/node": "^24.3.0",
     "@types/xxhashjs": "^0.2.4",
-    "typescript": "^5.9.2"
+    "typescript": "^7.0.2"
   },
   "license": "MIT",
   "author": "T50-Systems"

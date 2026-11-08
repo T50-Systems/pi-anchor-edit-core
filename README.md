@@ -120,12 +120,12 @@ This is best-effort optimistic detection, not compare-and-swap. A residual race 
 ```bash
 git clone https://github.com/T50-Systems/pi-anchor-edit-core
 cd pi-anchor-edit-core
-npm install
-npm run build
-npm run check
-npm test
-npm run test:coverage
-npm run benchmark
+pnpm install --frozen-lockfile
+pnpm run build
+pnpm run check
+pnpm test
+pnpm run test:coverage
+pnpm run benchmark
 ```
 
 ### Supported matrix

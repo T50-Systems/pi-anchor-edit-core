@@ -40,11 +40,11 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "node --test dist/test/**/*.test.js",
-    "test:coverage": "npm run build && node --experimental-test-coverage --test-coverage-lines=85 --test-coverage-branches=75 --test dist/test/**/*.test.js",
-    "benchmark": "npm run build && node benchmarks/core.mjs",
-    "verify:package": "npm run build && node scripts/verify-package.mjs",
+    "test:coverage": "pnpm run build && node --experimental-test-coverage --test-coverage-lines=85 --test-coverage-branches=75 --test dist/test/**/*.test.js",
+    "benchmark": "pnpm run build && node benchmarks/core.mjs",
+    "verify:package": "pnpm run build && node scripts/verify-package.mjs",
     "release:notes": "node scripts/extract-release-notes.mjs",
-    "pretest": "npm run build"
+    "pretest": "pnpm run build"
   },
   "dependencies": {
     "file-type": "^21.3.0",
@@ -56,5 +56,6 @@
     "typescript": "^5.9.2"
   },
   "license": "MIT",
-  "author": "T50-Systems"
+  "author": "T50-Systems",
+  "packageManager": "pnpm@10.34.9"
 }

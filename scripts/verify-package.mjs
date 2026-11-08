@@ -45,7 +45,7 @@ if (releaseTag !== undefined) {
 }
 
 const npmCli = process.env.npm_execpath;
-assert.ok(npmCli, 'npm_execpath is required; run verification through npm run verify:package');
+assert.ok(npmCli, 'npm_execpath is required; run verification through pnpm run verify:package');
 const packed = spawnSync(process.execPath, [npmCli, 'pack', '--dry-run', '--json'], {
   cwd: new URL('..', import.meta.url),
   encoding: 'utf8',
@@ -54,7 +54,7 @@ if (packed.status !== 0) {
   throw new Error(`npm pack --dry-run failed:\n${packed.stderr || packed.stdout}`);
 }
 const report = JSON.parse(packed.stdout);
-const files = new Set(report[0]?.files?.map(({ path }) => path));
+const files = new Set((Array.isArray(report) ? report[0] : report)?.files?.map(({ path }) => path));
 for (const required of ['LICENSE', 'README.md', 'package.json', 'dist/src/index.js', 'dist/src/index.d.ts']) {
   assert.ok(files.has(required), `package tarball is missing ${required}`);
 }

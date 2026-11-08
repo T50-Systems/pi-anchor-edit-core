@@ -5,7 +5,7 @@
 A release is built only from a reviewed commit already merged to protected `main`. Before proposing a tag:
 
 1. move the release notes from `[Unreleased]` to a level-two section whose heading exactly matches the `package.json` version (for example, `## 0.2.0` or `## [0.2.0]`);
-2. run `npm ci`, `npm run check`, `npm run test:coverage`, `npm audit --audit-level=high`, and `npm run verify:package`;
+2. run `pnpm install --frozen-lockfile`, `pnpm run check`, `pnpm run test:coverage`, `pnpm audit --audit-level=high`, and `pnpm run verify:package`;
 3. confirm the required Ubuntu, Windows, macOS, and Node 24 compatibility checks passed on the merge commit; and
 4. create an annotated `vX.Y.Z` tag that exactly matches the package version, then push that new tag once.
 

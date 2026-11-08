@@ -10,12 +10,12 @@
 ```bash
 git clone https://github.com/T50-Systems/pi-anchor-edit-core.git
 cd pi-anchor-edit-core
-npm install
-npm run check
-npm test
+pnpm install --frozen-lockfile
+pnpm run check
+pnpm test
 ```
 
-`npm test` builds TypeScript first and executes the compiled `node:test` suite.
+`pnpm test` builds TypeScript first and executes the compiled `node:test` suite.
 
 ## Rules
 
@@ -24,4 +24,4 @@ npm test
 - Never weaken stale-anchor, ambiguity, overlap, or display-prefix checks without an explicit compatibility decision.
 - Keep filesystem I/O outside pure edit transformations.
 - Update README, architecture docs, and changelog for public API changes.
-- Run `npm audit --audit-level=high` for dependency changes.
+- Run `pnpm audit --audit-level=high` for dependency changes.

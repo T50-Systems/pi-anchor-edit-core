@@ -3,7 +3,7 @@
 Build and run both the pure hash and end-to-end durability benchmarks:
 
 ```bash
-npm run benchmark
+pnpm run benchmark
 ```
 
 The benchmark prints machine-readable JSON. The hash fixture runs `computeLineHash` over deterministic TypeScript-like lines. The filesystem fixture performs 25 measured edits per durability level after three warmups and includes loading, classification, transformation, same-directory temporary-file write, selected syncs, destination revalidation, and rename. `file-and-parent-directory` uses `unsupportedDirectorySync: 'degrade'` so the same command runs on Windows and filesystems without directory fsync.
